@@ -1,0 +1,22 @@
+# .NET build artifacts
+*.csproj
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+
+# Environment files (contain sensitive tokens)
+*.env
+luna.env
+
+# Agent database files
+.luna-agent/
+*.db
+*.db-shm
+*.db-wal
