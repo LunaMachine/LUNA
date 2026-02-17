@@ -81,7 +81,88 @@ You'll also find a .3mf file, a simple case I designed to pull air in and push a
    ```bash
    sudo hostnamectl set-hostname LUNAHOST
    ```
- - Create the dedicated LUNA user (non-root):
+
+
+
+### Install Docker (as root):
+
+Docker is required for task isolation. Install it before creating the luna user:
+
+```bash
+# Install Docker
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+rm get-docker.sh
+
+# Add current root-user to docker group
+sudo usermod -aG docker $USER
+
+# Enable Docker service
+sudo systemctl enable docker
+sudo systemctl start docker
+
+# Verify Docker installation
+docker --version
+docker ps
+```
+
+### Install Ollama (as root):
+
+Ollama provides the local AI runtime for the LUNA Agent. Pull the model after the install:
+
+```bash
+# Install Ollama AI runtime
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Pull the Gemma3 4B model
+ollama pull gemma3:4b
+
+# Verify Ollama is running
+ollama list  # Should list gemma3:4b among installed models
+
+# Enable and start Ollama service
+sudo systemctl enable ollama
+sudo systemctl start ollama
+
+# Check Ollama status
+sudo systemctl status ollama
+```
+
+### Install and Configure UFW Firewall (as root):
+
+UFW provides essential firewall protections:
+
+```bash
+# Install UFW
+sudo apt install ufw -y
+
+# Default policies: deny incoming, allow outgoing
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+
+# Allow SSH (required for remote access)
+sudo ufw allow ssh
+
+# Allow Ollama (port 11434) from localhost only
+sudo ufw allow from 127.0.0.1 to any port 11434
+
+# Enable UFW
+sudo ufw enable
+
+# Verify firewall status
+sudo ufw status verbose
+```
+
+### Install GitHub CLI (as root):
+
+GitHub CLI (gh) is used by the LUNA Agent for automatic PR creation:
+
+```bash
+sudo apt install gh -y
+gh auth login
+```
+
+### Create the dedicated LUNA non-root-user (as root):
    ```bash
    # Create user with home directory and bash shell
    sudo useradd -m -s /bin/bash luna
@@ -202,7 +283,6 @@ SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
 SLACK_CHANNEL_ID=C01234567
 GH_TOKEN=ghp_...
-AGENT_CHANNEL=#luna
 ```
 
 The systemd service already loads this file.
@@ -245,31 +325,9 @@ Store these securely and never share them publicly.
 - Select "Copy link".
 - The channel ID is the part of the URL after the last slash (it starts with "C", e.g., `C01234567`).
 
-**Note:** If you don't have a suitable channel yet, create a new one in Slack (e.g., #luna-status) and invite the LUNA bot by typing `/invite @LUNA` in the channel. The bot needs to be invited to any channel it will post to.
+**Note:** If you don't have a suitable channel yet, create a new one in Slack (e.g., #agent) and invite the LUNA bot by typing `/invite @LUNA` in the channel. The bot needs to be invited to any channel it will post to.
 
 
-
-### Installing Ollama
-
-Ollama provides the local AI runtime for the LUNA Agent. **Install Ollama before setting up the LUNA Agent Service.** Pull the model after the install.
-
-```bash
-# Install Ollama AI runtime
-curl -fsSL https://ollama.com/install.sh | sh
-
-# Pull the Gemma3 4B model
-ollama pull gemma3:4b
-
-# Verify Ollama is running
-ollama list  # Should list gemma3:4b among installed models
-
-# Enable and start Ollama service
-sudo systemctl enable ollama
-sudo systemctl start ollama
-
-# Check Ollama status
-sudo systemctl status ollama
-```
 
 ### LUNA Agent Service Setup
 
@@ -284,12 +342,12 @@ The LUNA Agent is an autonomous agentic flow that interacts with users via Slack
 - Slack and GitHub integration work through the agent (not containers)
 - **Tasks can use HTTP clients within containers** for web searches and data collection
 
-**Prerequisites:**
-- Docker installed and running (see below for installation)
-- UFW firewall installed and configured (see below for setup)
- - Ollama installed and running locally (see Installing Ollama above)
-- Slack app configured with Socket Mode enabled (see step 11)
- - Git configured with SSH key for GitHub access (see GitHub section above)
+**Prerequisites (all installed earlier as root):**
+- Docker installed and running
+- UFW firewall installed and configured  
+- Ollama installed and running locally with gemma3:4b model pulled
+- Slack app configured with Socket Mode enabled
+- Git configured with SSH key for GitHub access (see GitHub section)
 - LUNA configuration file `/etc/luna/luna.env` created from `luna.env.template`
 - GitHub CLI (gh) installed for automatic PR creation: `sudo apt install gh`
 
@@ -305,49 +363,6 @@ sudo nano /etc/luna/luna.env
 # Secure the configuration file
 sudo chown luna:luna /etc/luna/luna.env
 sudo chmod 600 /etc/luna/luna.env
-```
-
-**Install and Configure UFW Firewall:**
-```bash
-# Install UFW
-sudo apt install ufw
-
-# Default policies: deny incoming, allow outgoing
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-
-# Allow SSH (required for remote access)
-sudo ufw allow ssh
-
-# Allow Ollama (port 11434) from localhost only
-sudo ufw allow from 127.0.0.1 to any port 11434
-
-# Enable UFW
-sudo ufw enable
-
-# Verify firewall status
-sudo ufw status verbose
-```
-
-**Install Docker:**
-```bash
-# Install Docker
-curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
-
-# Add luna user to docker group (no root access needed)
-sudo usermod -aG docker luna
-
-# Enable and start Docker
-sudo systemctl enable docker
-sudo systemctl start docker
-
-# Verify Docker installation
-docker --version
-docker ps
-
-# Verify luna user can run Docker (logout and login required after adding to group)
-docker run hello-world
 ```
 
 **Verify Prerequisites:**
@@ -458,7 +473,7 @@ sudo journalctl -u luna -f
 
 **Using the LUNA Agent:**
 
-Once the service is running, interact with the agent via Slack in the `#luna` channel:
+Once the service is running, interact with the agent via Slack in the `#agent` channel:
 
 **Available Commands:**
 - `/status` - Show current task and queue status

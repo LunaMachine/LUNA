@@ -31,7 +31,6 @@ var slackConfigFile = "/etc/luna/luna.env";
 var dbPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".luna-agent", "tasks.db");
 var slackBotToken = "";
 var slackAppToken = "";
-var agentChannel = Environment.GetEnvironmentVariable("AGENT_CHANNEL") ?? "#luna";
 var agentChannelId = "";
 
 // AI Configuration
@@ -63,9 +62,9 @@ if (System.IO.File.Exists(slackConfigFile))
     }
 }
 
-if (string.IsNullOrEmpty(slackBotToken) || string.IsNullOrEmpty(slackAppToken))
+if (string.IsNullOrEmpty(slackBotToken) || string.IsNullOrEmpty(slackAppToken) || string.IsNullOrEmpty(agentChannelId))
 {
-    Console.WriteLine("ERROR: Missing Slack tokens. Please configure /etc/luna/slack.env with:");
+    Console.WriteLine("ERROR: Missing required configuration. Please configure /etc/luna/luna.env with:");
     Console.WriteLine("  SLACK_BOT_TOKEN=xoxb-...");
     Console.WriteLine("  SLACK_APP_TOKEN=xapp-...");
     Console.WriteLine("  SLACK_CHANNEL_ID=C...");
@@ -74,7 +73,7 @@ if (string.IsNullOrEmpty(slackBotToken) || string.IsNullOrEmpty(slackAppToken))
 
 Console.WriteLine("=== LUNA Agent Starting ===");
 Console.WriteLine($"Database: {dbPath}");
-Console.WriteLine($"Agent Channel: {agentChannel} ({agentChannelId})");
+Console.WriteLine($"Agent Channel ID: {agentChannelId}");
 
 // Set database path for AgentDbContext
 AgentDbContext.DbPath = dbPath;
@@ -967,25 +966,6 @@ async Task HandleSlackMessage(MessageEvent message, ISlackApiClient slack)
 Console.WriteLine("Connecting to Slack...");
 
 var client = new SlackApiClient(slackBotToken);
-
-// Get agent channel ID if not configured
-if (string.IsNullOrEmpty(agentChannelId))
-{
-    try
-    {
-        var conversations = await client.Conversations.List();
-        var agentChan = conversations.Channels.FirstOrDefault(c => c.Name == "agent");
-        if (agentChan != null)
-        {
-            agentChannelId = agentChan.Id;
-            Console.WriteLine($"Found #agent channel: {agentChannelId}");
-        }
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"Error finding agent channel: {ex.Message}");
-    }
-}
 
 await SendSlackMessage(client, "🚀 LUNA Agent is online and ready!");
 
