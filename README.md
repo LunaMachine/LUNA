@@ -414,9 +414,10 @@ WorkingDirectory=/home/luna/luna
 Environment=DOTNET_ROOT=/home/luna/.dotnet
 Environment=PATH=/home/luna/.dotnet:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=HOME=/home/luna
-
-# Load LUNA configuration from user home directory
-EnvironmentFile=/home/luna/.luna/luna.env
+Environment="SLACK_BOT_TOKEN=$(grep ^SLACK_BOT_TOKEN /home/luna/.luna/luna.env | cut -d= -f2)"
+Environment="SLACK_APP_TOKEN=$(grep ^SLACK_APP_TOKEN /home/luna/.luna/luna.env | cut -d= -f2)"
+Environment="SLACK_CHANNEL_ID=$(grep ^SLACK_CHANNEL_ID /home/luna/.luna/luna.env | cut -d= -f2)"
+Environment="GH_TOKEN=$(grep ^GH_TOKEN /home/luna/.luna/luna.env | cut -d= -f2)"
 
 # Start the agent
 ExecStart=/home/luna/.dotnet/dotnet luna-agent.cs
