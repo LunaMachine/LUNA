@@ -274,28 +274,6 @@ git clone https://github.com/<YOUR_USERNAME>/LUNA.git ~/luna
 cd ~/luna
 ```
 
-### Populate `~/.luna/luna.env`
-
-As the luna user, copy the template and edit with your tokens:
-
-```bash
-mkdir -p ~/.luna
-cp luna.env.template ~/.luna/luna.env
-nano ~/.luna/luna.env  # Edit with your actual token values
-chmod 600 ~/.luna/luna.env  # Secure the file (readable only by luna user)
-```
-
-Example content:
-
-```env
-SLACK_BOT_TOKEN=xoxb-...
-SLACK_APP_TOKEN=xapp-...
-SLACK_CHANNEL_ID=C01234567
-GH_TOKEN=ghp_...
-```
-
-The systemd service will load this file from your home directory.
-
 ### Slack App Manifest
 Create a new app at https://api.slack.com/apps -> From Manifest:
 
@@ -336,6 +314,29 @@ Store these securely and never share them publicly.
 
 **Note:** If you don't have a suitable channel yet, create a new one in Slack (e.g., #agent) and invite the LUNA bot by typing `/invite @LUNA` in the channel. The bot needs to be invited to any channel it will post to.
 
+
+
+### Populate `~/.luna/luna.env`
+
+As the luna user, copy the template and edit with your tokens:
+
+```bash
+mkdir -p ~/.luna
+cp luna.env.template ~/.luna/luna.env
+nano ~/.luna/luna.env  # Edit with your actual token values
+chmod 600 ~/.luna/luna.env  # Secure the file (readable only by luna user)
+```
+
+Example content:
+
+```env
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+SLACK_CHANNEL_ID=C01234567
+GH_TOKEN=ghp_...
+```
+
+The systemd service will load this file from your home directory.
 
 
 ### LUNA Agent Service Setup
