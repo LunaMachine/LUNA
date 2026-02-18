@@ -274,14 +274,15 @@ git clone https://github.com/<YOUR_USERNAME>/LUNA.git ~/luna
 cd ~/luna
 ```
 
-### Populate `/etc/luna/luna.env`
+### Populate `~/.luna/luna.env`
 
-Copy the template and edit with your tokens:
+As the luna user, copy the template and edit with your tokens:
 
 ```bash
-sudo mkdir -p /etc/luna
-sudo cp luna.env.template /etc/luna/luna.env
-sudo nano /etc/luna/luna.env  # Edit with your actual token values
+mkdir -p ~/.luna
+cp luna.env.template ~/.luna/luna.env
+nano ~/.luna/luna.env  # Edit with your actual token values
+chmod 600 ~/.luna/luna.env  # Secure the file (readable only by luna user)
 ```
 
 Example content:
@@ -293,7 +294,7 @@ SLACK_CHANNEL_ID=C01234567
 GH_TOKEN=ghp_...
 ```
 
-The systemd service already loads this file.
+The systemd service will load this file from your home directory.
 
 ### Slack App Manifest
 Create a new app at https://api.slack.com/apps -> From Manifest:
@@ -359,18 +360,17 @@ The LUNA Agent is an autonomous agentic flow that interacts with users via Slack
 - LUNA configuration file `/etc/luna/luna.env` created from `luna.env.template`
 - GitHub CLI (gh) installed for automatic PR creation: `sudo apt install gh`
 
-**Setup LUNA Configuration:**
+**Setup LUNA Configuration (as luna user):**
 ```bash
-# Create the configuration directory
-sudo mkdir -p /etc/luna
+# Create the configuration directory in your home
+mkdir -p ~/.luna
 
 # Copy the template and edit it with your tokens
-sudo cp luna.env.template /etc/luna/luna.env
-sudo nano /etc/luna/luna.env
+cp luna.env.template ~/.luna/luna.env
+nano ~/.luna/luna.env
 
 # Secure the configuration file
-sudo chown luna:luna /etc/luna/luna.env
-sudo chmod 600 /etc/luna/luna.env
+chmod 600 ~/.luna/luna.env
 ```
 
 **Verify Prerequisites:**
@@ -386,7 +386,7 @@ docker ps
 ollama list
 
 # Check LUNA configuration
-cat /etc/luna/luna.env
+cat ~/.luna/luna.env
 
 # Check Git/SSH
 ssh -T git@github.com
@@ -417,8 +417,8 @@ Environment=DOTNET_ROOT=/home/luna/.dotnet
 Environment=PATH=/home/luna/.dotnet:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=HOME=/home/luna
 
-# Load LUNA configuration
-EnvironmentFile=/etc/luna/luna.env
+# Load LUNA configuration from user home directory
+EnvironmentFile=%h/.luna/luna.env
 
 # Start the agent
 ExecStart=/home/luna/.dotnet/dotnet screen.cs

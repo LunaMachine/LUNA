@@ -27,7 +27,7 @@ using Octokit;
 // Configuration
 // ============================================================================
 
-var slackConfigFile = "/etc/luna/luna.env";
+var slackConfigFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".luna", "luna.env");
 var dbPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".luna-agent", "tasks.db");
 var slackBotToken = "";
 var slackAppToken = "";
@@ -64,7 +64,7 @@ if (System.IO.File.Exists(slackConfigFile))
 
 if (string.IsNullOrEmpty(slackBotToken) || string.IsNullOrEmpty(slackAppToken) || string.IsNullOrEmpty(agentChannelId))
 {
-    Console.WriteLine("ERROR: Missing required configuration. Please configure /etc/luna/luna.env with:");
+    Console.WriteLine("ERROR: Missing required configuration. Please configure ~/.luna/luna.env with:");
     Console.WriteLine("  SLACK_BOT_TOKEN=xoxb-...");
     Console.WriteLine("  SLACK_APP_TOKEN=xapp-...");
     Console.WriteLine("  SLACK_CHANNEL_ID=C...");
