@@ -50,6 +50,8 @@ const int MaxErrorMessagePreviewLength = 2000;
 const int MaxIterationTimeSeconds = 180; // 3 minutes per iteration
 const int MaxOllamaRetries = 3; // Number of retries for Ollama failures
 const int OllamaRetryBaseDelayMs = 2000; // Base delay for retry exponential backoff
+const int IterationContinueDelayMs = 2000; // Delay before continuing to next iteration
+const int OllamaFailureDelayMs = 5000; // Delay after Ollama failure before retry
 
 // Markdown cleanup constants
 const string MarkdownJsonBlockPrefix = "```json";
@@ -1194,7 +1196,7 @@ Respond with ONLY a JSON array of step descriptions (no markdown, no code blocks
                 await SendSlackMessage(slack, $"⏱️ Iteration {iteration} reached time limit ({MaxIterationTimeSeconds}s) before AI call. Progress recorded, continuing in next iteration...");
                 await LogThought(task.Id, iteration, ThoughtType.Observation, $"Iteration reached time limit before AI call. Elapsed: {iterationElapsed:F0}s");
                 contextHistory.AppendLine($"[Iteration {iteration}] Time limit reached ({iterationElapsed:F0}s) before AI call. Continuing in next iteration.");
-                await Task.Delay(2000);
+                await Task.Delay(IterationContinueDelayMs);
                 continue;
             }
 
@@ -1240,7 +1242,7 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
                 contextHistory.AppendLine($"[Iteration {iteration}] ERROR: AI did not respond");
                 
                 // After multiple consecutive failures, pause the task and try next one
-                if (ollamaFailureCount >= 3)
+                if (ollamaFailureCount >= MaxOllamaRetries)
                 {
                     await SendSlackMessage(slack, $"⏸️ Task #{task.Id} paused due to repeated AI failures. Will try next task in queue.");
                     await LogThought(task.Id, iteration, ThoughtType.Error, "Task paused due to repeated AI failures");
@@ -1248,7 +1250,7 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
                     return; // Exit and allow next task to run
                 }
                 
-                await Task.Delay(5000);
+                await Task.Delay(OllamaFailureDelayMs);
                 continue;
             }
 
