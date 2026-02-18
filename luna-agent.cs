@@ -44,6 +44,8 @@ const int MaxTaskIterations = 100;
 const int MaxSlackMessagePreviewLength = 500;
 const int MaxDescriptionPreviewLength = 50;
 const int MaxLogPreviewLength = 2000;
+const int MaxContextHistoryEntryLength = 5000;
+const int MaxErrorMessagePreviewLength = 2000;
 
 // Load Slack tokens from file
 if (System.IO.File.Exists(slackConfigFile))
@@ -557,16 +559,36 @@ async Task ProcessTask(WorkTask task, ISlackApiClient slack)
         var iteration = 0;
         var completed = false;
         var workingDir = "/workspace";
+        var contextHistory = new StringBuilder();
 
         while (!completed && iteration < MaxTaskIterations && task.Status != TaskStatus.Stopped)
         {
             iteration++;
+            
+            // Check for pause/stop at start of each iteration
+            using (var db = new AgentDbContext())
+            {
+                var currentTaskStatus = await db.Tasks.FindAsync(task.Id);
+                if (currentTaskStatus?.Status == TaskStatus.Stopped)
+                {
+                    await SendSlackMessage(slack, $"🛑 Task #{task.Id} stopped by user");
+                    await LogThought(task.Id, iteration, ThoughtType.UserUpdate, "Task stopped by user");
+                    break;
+                }
+                else if (currentTaskStatus?.Status == TaskStatus.Paused)
+                {
+                    await SendSlackMessage(slack, $"⏸️ Task #{task.Id} paused by user");
+                    await LogThought(task.Id, iteration, ThoughtType.UserUpdate, "Task paused by user");
+                    return;
+                }
+            }
+            
             var iterationMsg = $"⚙️ Iteration {iteration}/{MaxTaskIterations} for task #{task.Id}";
             await SendSlackMessage(slack, iterationMsg);
             await LogToDb(task.Id, $"Iteration {iteration} started");
             await LogThought(task.Id, iteration, ThoughtType.Observation, $"Starting iteration {iteration}");
 
-            // Ask AI for next steps
+            // Build context-aware prompt with history from previous iterations
             var prompt = $@"You are LUNA, an AI agent running in an isolated Docker container. Current task: {task.Description}
 Iteration: {iteration}
 Working directory: {workingDir}
@@ -574,11 +596,19 @@ Working directory: {workingDir}
 You can run commands in the container, create files, and use installed tools (git, curl, wget, build-essential).
 You can use curl/wget to fetch data from the web, search for information, or download files.
 For web research, you can use the 'research' action or directly use curl/wget commands.
-What is the next step to complete this task? Provide a specific, executable action.
-If the task is complete, respond with 'TASK_COMPLETE'.
-If you need user input, respond with 'NEED_INPUT: <question>'.
 
-Respond in JSON format:
+IMPORTANT: Respond with ONLY valid JSON. Do NOT wrap your response in markdown code blocks or backticks.
+
+{(contextHistory.Length > 0 ? $@"
+Previous iteration context:
+{contextHistory}
+
+Based on the above context, what is the next step?" : "What is the next step to complete this task? Provide a specific, executable action.")}
+
+If the task is complete, respond with action ""complete"".
+If you need user input, respond with action ""need_input"".
+
+Respond with ONLY this JSON format (no markdown, no code blocks):
 {{
   ""action"": ""command"" or ""create_file"" or ""research"" or ""complete"" or ""need_input"",
   ""details"": ""specific details"",
@@ -596,14 +626,36 @@ Respond in JSON format:
             {
                 await SendSlackMessage(slack, $"⚠️ AI did not respond for task #{task.Id}");
                 await LogThought(task.Id, iteration, ThoughtType.Error, "AI did not respond");
+                contextHistory.AppendLine($"[Iteration {iteration}] ERROR: AI did not respond");
                 await Task.Delay(5000);
                 continue;
             }
 
+            // Strip markdown code blocks if present (common AI wrapping pattern)
+            var cleanedResponse = aiResponse.Trim();
+            
+            // Remove opening markdown block
+            if (cleanedResponse.StartsWith("```json") && cleanedResponse.Length > 7)
+            {
+                cleanedResponse = cleanedResponse.Substring(7).TrimStart(); // Remove ```json and any leading whitespace/newlines
+            }
+            else if (cleanedResponse.StartsWith("```") && cleanedResponse.Length > 3)
+            {
+                cleanedResponse = cleanedResponse.Substring(3).TrimStart(); // Remove ``` and any leading whitespace/newlines
+            }
+            
+            // Remove closing markdown block
+            if (cleanedResponse.EndsWith("```") && cleanedResponse.Length >= 3)
+            {
+                cleanedResponse = cleanedResponse.Substring(0, cleanedResponse.Length - 3).TrimEnd();
+            }
+            
+            cleanedResponse = cleanedResponse.Trim();
+
             // Parse AI response
             try
             {
-                var actionDoc = JsonDocument.Parse(aiResponse);
+                var actionDoc = JsonDocument.Parse(cleanedResponse);
                 var action = actionDoc.RootElement.GetProperty("action").GetString();
 
                 if (action == "complete" || aiResponse.Contains("TASK_COMPLETE"))
@@ -626,6 +678,15 @@ Respond in JSON format:
                 else if (action == "command")
                 {
                     var command = actionDoc.RootElement.GetProperty("command").GetString() ?? "";
+                    var details = actionDoc.RootElement.TryGetProperty("details", out var detailsElement) 
+                        ? detailsElement.GetString() : "";
+                    
+                    if (!string.IsNullOrEmpty(details))
+                    {
+                        await SendSlackMessage(slack, $"💭 AI thinking: {details}");
+                        contextHistory.AppendLine($"[Iteration {iteration}] Thought: {details}");
+                    }
+                    
                     await SendSlackMessage(slack, $"💻 Running in container: `{command}`");
                     await LogThought(task.Id, iteration, ThoughtType.Action, command, "command", command);
                     
@@ -633,11 +694,23 @@ Respond in JSON format:
                     await LogToDb(task.Id, $"Command output: {commandOutput}");
                     await LogThought(task.Id, iteration, ThoughtType.CommandOutput, commandOutput);
                     await SendSlackMessage(slack, $"```{commandOutput.Substring(0, Math.Min(MaxSlackMessagePreviewLength, commandOutput.Length))}```");
+                    
+                    // Add to context history for next iteration
+                    contextHistory.AppendLine($"[Iteration {iteration}] Executed: {command}");
+                    contextHistory.AppendLine($"Output: {commandOutput.Substring(0, Math.Min(MaxContextHistoryEntryLength, commandOutput.Length))}");
                 }
                 else if (action == "create_file")
                 {
                     var filePath = actionDoc.RootElement.GetProperty("file_path").GetString() ?? "";
                     var fileContent = actionDoc.RootElement.GetProperty("file_content").GetString() ?? "";
+                    var details = actionDoc.RootElement.TryGetProperty("details", out var detailsElement) 
+                        ? detailsElement.GetString() : "";
+                    
+                    if (!string.IsNullOrEmpty(details))
+                    {
+                        await SendSlackMessage(slack, $"💭 AI thinking: {details}");
+                        contextHistory.AppendLine($"[Iteration {iteration}] Thought: {details}");
+                    }
                     
                     // Create file in container
                     var tempFile = Path.Combine("/tmp", $"luna-temp-{task.Id}-{Path.GetFileName(filePath)}");
@@ -648,6 +721,9 @@ Respond in JSON format:
                     await SendSlackMessage(slack, $"📄 Created file in container: {filePath}");
                     await LogToDb(task.Id, $"Created file: {filePath}");
                     await LogThought(task.Id, iteration, ThoughtType.Action, $"Created file: {filePath}", "create_file", filePath);
+                    
+                    // Add to context history
+                    contextHistory.AppendLine($"[Iteration {iteration}] Created file: {filePath}");
                 }
                 else if (action == "research")
                 {
@@ -660,13 +736,25 @@ Respond in JSON format:
                     await LogToDb(task.Id, $"Research results: {researchResult}");
                     await LogThought(task.Id, iteration, ThoughtType.Observation, researchResult);
                     await SendSlackMessage(slack, $"📚 Research summary: {researchResult.Substring(0, Math.Min(MaxSlackMessagePreviewLength, researchResult.Length))}");
+                    
+                    // Add to context history
+                    contextHistory.AppendLine($"[Iteration {iteration}] Research: {details}");
+                    contextHistory.AppendLine($"Results: {researchResult.Substring(0, Math.Min(MaxContextHistoryEntryLength, researchResult.Length))}");
                 }
             }
             catch (Exception ex)
             {
-                await LogToDb(task.Id, $"Error parsing AI response: {ex.Message}");
+                var responsePreview = cleanedResponse.Length > MaxErrorMessagePreviewLength 
+                    ? cleanedResponse.Substring(0, MaxErrorMessagePreviewLength) 
+                    : cleanedResponse;
+                var errorMsg = $"Error parsing AI response: {ex.Message}. Raw response: {responsePreview}";
+                await LogToDb(task.Id, errorMsg);
                 await LogThought(task.Id, iteration, ThoughtType.Error, $"Error: {ex.Message}");
                 await SendSlackMessage(slack, $"⚠️ Error processing AI response: {ex.Message}");
+                
+                // Add error to context so AI knows what went wrong
+                contextHistory.AppendLine($"[Iteration {iteration}] ERROR: Failed to parse JSON response. {ex.Message}");
+                contextHistory.AppendLine($"You must respond with valid JSON only, without markdown code blocks.");
             }
 
             await Task.Delay(2000); // Rate limiting
@@ -873,15 +961,59 @@ async Task HandleSlackMessage(MessageEvent message, ISlackApiClient slack)
             {
                 using var db = new AgentDbContext();
                 var task = await db.Tasks.FindAsync(taskId);
-                if (task != null && task.Status == TaskStatus.Queued)
+                if (task != null && (task.Status == TaskStatus.Queued || task.Status == TaskStatus.Running))
                 {
                     await UpdateTaskStatus(taskId, TaskStatus.Paused);
                     await SendSlackMessage(slack, $"⏸️ Task #{taskId} paused");
+                    
+                    // If it's the current running task, log that it will pause at next iteration
+                    if (currentTask?.Id == taskId)
+                    {
+                        await LogToDb(taskId, "Task will pause at next iteration check");
+                        await SendSlackMessage(slack, $"ℹ️ Task #{taskId} will pause at the next iteration");
+                    }
                 }
                 else
                 {
-                    await SendSlackMessage(slack, $"Cannot pause task #{taskId}");
+                    await SendSlackMessage(slack, $"Cannot pause task #{taskId} - must be queued or running");
                 }
+            }
+        }
+        else if (text.StartsWith("!update"))
+        {
+            var parts = text.Split(' ', 3);
+            if (parts.Length >= 3 && int.TryParse(parts[1], out var taskId))
+            {
+                var updateText = parts[2];
+                using var db = new AgentDbContext();
+                var task = await db.Tasks.FindAsync(taskId);
+                if (task != null && (task.Status == TaskStatus.Running || task.Status == TaskStatus.Queued))
+                {
+                    // Append update to task description for AI context
+                    task.Description += $"\n\nUser Update: {updateText}";
+                    await db.SaveChangesAsync();
+                    
+                    // Log the update (iteration 0 indicates user action outside iteration loop)
+                    await LogToDb(taskId, $"User update: {updateText}");
+                    await LogThought(taskId, 0, ThoughtType.UserUpdate, $"User provided update: {updateText}");
+                    
+                    if (task.Status == TaskStatus.Running)
+                    {
+                        await SendSlackMessage(slack, $"✅ Update sent to task #{taskId}. AI will see this in the next iteration.");
+                    }
+                    else if (task.Status == TaskStatus.Queued)
+                    {
+                        await SendSlackMessage(slack, $"✅ Update sent to queued task #{taskId}. AI will see this when the task starts.");
+                    }
+                }
+                else
+                {
+                    await SendSlackMessage(slack, $"Cannot update task #{taskId} - task not found or already completed");
+                }
+            }
+            else
+            {
+                await SendSlackMessage(slack, "Usage: !update <task_id> <message>");
             }
         }
         else if (text.StartsWith("!start"))
@@ -970,9 +1102,10 @@ async Task HandleSlackMessage(MessageEvent message, ISlackApiClient slack)
 **!status** - Show current task and queue
 **!details <task_id>** - Get details about a specific task
 **!queue** - Show all queued and paused tasks
-**!pause <task_id>** - Pause a queued task
+**!pause <task_id>** - Pause a running or queued task
 **!start <task_id>** - Start a task (pauses current task if needed, starts or resumes specified task)
 **!stop <task_id>** - Stop a task
+**!update <task_id> <message>** - Send additional context to a running task
 **!system** - Get current system status (CPU, RAM, temperature, Ollama)
 **!help** - Show this help message
 
