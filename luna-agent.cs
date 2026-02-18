@@ -33,6 +33,7 @@ var slackBotToken = "";
 var slackAppToken = "";
 var agentChannelId = "";
 var agentUserId = "";
+var userGithubName = "";
 
 // AI Configuration
 const double OllamaTemperature = 0.7;
@@ -61,6 +62,7 @@ if (System.IO.File.Exists(slackConfigFile))
             if (key == "SLACK_BOT_TOKEN" || key == "xoxb") slackBotToken = value;
             if (key == "SLACK_APP_TOKEN" || key == "xapp") slackAppToken = value;
             if (key == "SLACK_CHANNEL_ID") agentChannelId = value;
+            if (key == "UserGithubName") userGithubName = value;
         }
     }
 }
@@ -528,6 +530,191 @@ async Task CleanupStaleContainers()
 }
 
 // ============================================================================
+// Task Deliverables Management
+// ============================================================================
+
+bool IsCodeRelatedTask(string description)
+{
+    // Detect if task is code-related by looking for keywords
+    var lowerDesc = description.ToLower();
+    var codeKeywords = new[] { 
+        "code", "script", "program", "function", "class", "api", "app", "application",
+        "python", "javascript", "java", "c#", "csharp", "go", "rust", "node", "react",
+        "repo", "repository", "git", "github", "pull request", "pr", "commit",
+        "install", "package", "npm", "pip", "cargo", "build", "compile", "debug",
+        "website", "web", "server", "database", "sql"
+    };
+    
+    return codeKeywords.Any(keyword => lowerDesc.Contains(keyword));
+}
+
+string? ExtractRepoReference(string description)
+{
+    // Try to find GitHub repo references in the task description
+    // Patterns: github.com/owner/repo, owner/repo, or full URLs
+    var patterns = new[] {
+        @"github\.com/([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)",
+        @"(?:^|\s)([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)(?:\s|$)",
+        @"https?://github\.com/([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)"
+    };
+    
+    foreach (var pattern in patterns)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(description, pattern);
+        if (match.Success)
+        {
+            return match.Groups[1].Value;
+        }
+    }
+    
+    return null;
+}
+
+async Task<bool> CloneOrPullRepo(string repoReference, string targetPath, int taskId)
+{
+    try
+    {
+        var repoUrl = repoReference.StartsWith("http") ? repoReference : $"https://github.com/{repoReference}";
+        
+        if (Directory.Exists(targetPath))
+        {
+            // Repo already exists, pull latest
+            await LogToDb(taskId, $"Pulling latest changes from {repoReference}");
+            await RunCommand("git fetch origin", targetPath);
+            await RunCommand("git pull origin main || git pull origin master", targetPath);
+            return true;
+        }
+        else
+        {
+            // Clone the repo
+            await LogToDb(taskId, $"Cloning repository {repoReference}");
+            var output = await RunCommand($"git clone {repoUrl} {targetPath}");
+            
+            if (output.Contains("fatal") || output.Contains("error"))
+            {
+                await LogToDb(taskId, $"Failed to clone repository: {output}");
+                return false;
+            }
+            
+            return true;
+        }
+    }
+    catch (Exception ex)
+    {
+        await LogToDb(taskId, $"Error accessing repository: {ex.Message}");
+        return false;
+    }
+}
+
+async Task<string?> CreateNewGithubRepo(int taskId, string taskDescription, ISlackApiClient slack)
+{
+    try
+    {
+        var sanitized = new string(taskDescription.Take(30).Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray());
+        var repoName = $"luna-task-{taskId}-{sanitized}".ToLower();
+        
+        // Check if GH_TOKEN is available
+        var ghToken = Environment.GetEnvironmentVariable("GH_TOKEN");
+        if (string.IsNullOrEmpty(ghToken))
+        {
+            await LogToDb(taskId, "GH_TOKEN not available - cannot create repository");
+            await SendSlackMessage(slack, $"⚠️ Cannot create new repository - GitHub token not configured");
+            return null;
+        }
+        
+        // Create repo using GitHub CLI
+        await LogToDb(taskId, $"Creating new GitHub repository: {repoName}");
+        var output = await RunCommand($"gh repo create {repoName} --private --confirm");
+        
+        if (output.Contains("error") || output.Contains("failed"))
+        {
+            await LogToDb(taskId, $"Failed to create repository: {output}");
+            return null;
+        }
+        
+        // Add user as collaborator if UserGithubName is configured
+        if (!string.IsNullOrEmpty(userGithubName))
+        {
+            await LogToDb(taskId, $"Adding {userGithubName} as collaborator");
+            var addCollabOutput = await RunCommand($"gh api repos/$(gh api user --jq .login)/{repoName}/collaborators/{userGithubName} -X PUT -f permission=push");
+            await SendSlackMessage(slack, $"✅ Added {userGithubName} as collaborator to {repoName}");
+        }
+        
+        // Get the repo URL
+        var repoUrlOutput = await RunCommand($"gh repo view {repoName} --json url --jq .url");
+        var repoUrl = repoUrlOutput.Trim();
+        
+        await LogToDb(taskId, $"Created repository: {repoUrl}");
+        return repoUrl;
+    }
+    catch (Exception ex)
+    {
+        await LogToDb(taskId, $"Error creating repository: {ex.Message}");
+        return null;
+    }
+}
+
+async Task DeliverNonCodingTask(int taskId, string taskFolder, ISlackApiClient slack)
+{
+    try
+    {
+        // Get all files from the task folder
+        var files = Directory.GetFiles(taskFolder, "*", SearchOption.AllDirectories);
+        
+        if (files.Length == 0)
+        {
+            await SendSlackMessage(slack, $"✅ Task #{taskId} completed - no deliverables to return");
+            return;
+        }
+        
+        await SendSlackMessage(slack, $"📦 Delivering results for task #{taskId}...");
+        
+        foreach (var file in files)
+        {
+            var fileInfo = new FileInfo(file);
+            var relativePath = Path.GetRelativePath(taskFolder, file);
+            
+            // For text files, send content directly
+            if (fileInfo.Extension.ToLower() is ".txt" or ".md" or ".json" or ".csv" or ".log")
+            {
+                var content = await System.IO.File.ReadAllTextAsync(file);
+                var truncated = content.Length > 3000 ? content.Substring(0, 3000) + "\n\n... (truncated)" : content;
+                await SendSlackMessage(slack, $"📄 **{relativePath}**\n```\n{truncated}\n```");
+            }
+            else
+            {
+                // For binary files, upload to Slack
+                try
+                {
+                    var fileBytes = await System.IO.File.ReadAllBytesAsync(file);
+                    await slack.Files.Upload(
+                        content: fileBytes,
+                        filename: Path.GetFileName(file),
+                        channels: new[] { agentChannelId },
+                        title: $"Task #{taskId} - {relativePath}"
+                    );
+                    await SendSlackMessage(slack, $"📎 Uploaded: {relativePath}");
+                }
+                catch (Exception ex)
+                {
+                    await LogToDb(taskId, $"Error uploading file {relativePath}: {ex.Message}");
+                }
+            }
+        }
+        
+        await SendSlackMessage(slack, $"✅ All deliverables for task #{taskId} have been sent");
+        
+        // Clean up the task folder
+        Directory.Delete(taskFolder, true);
+        await LogToDb(taskId, $"Cleaned up task folder: {taskFolder}");
+    }
+    catch (Exception ex)
+    {
+        await LogToDb(taskId, $"Error delivering non-coding task: {ex.Message}");
+    }
+}
+
+// ============================================================================
 // Agentic Task Processing
 // ============================================================================
 
@@ -760,47 +947,161 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
             await Task.Delay(2000); // Rate limiting
         }
 
-        // If task involves code/files and is completed, copy from container and create branch/PR
+        // If task is completed, handle deliverables based on task type
         if (completed)
         {
-            // Copy files from container to local temp directory
-            var localWorkingDir = Path.Combine("/tmp", $"luna-task-{task.Id}");
-            Directory.CreateDirectory(localWorkingDir);
-            await CopyFileFromContainer(containerId!, "/workspace/.", localWorkingDir);
+            // Create task-specific folder in home directory (sibling to luna execution directory)
+            var homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var taskFolder = Path.Combine(homeDir, $"luna-task-{task.Id}");
+            Directory.CreateDirectory(taskFolder);
             
-            if (Directory.GetFiles(localWorkingDir, "*", SearchOption.AllDirectories).Length > 0)
+            // Copy files from container to task folder
+            await LogToDb(task.Id, $"Copying deliverables to {taskFolder}");
+            await CopyFileFromContainer(containerId!, "/workspace/.", taskFolder);
+            
+            var hasFiles = Directory.GetFiles(taskFolder, "*", SearchOption.AllDirectories).Length > 0;
+            
+            if (!hasFiles)
             {
-                await SendSlackMessage(slack, $"📦 Creating branch and PR for task #{task.Id}...");
-                await LogThought(task.Id, iteration, ThoughtType.UserUpdate, "Creating branch and PR");
-                var (branchName, repoPath) = await CreateGitBranch(task.Id, task.Description);
-            
-                if (!string.IsNullOrEmpty(branchName) && !string.IsNullOrEmpty(repoPath))
+                // No files created, just mark complete
+                await SendSlackMessage(slack, $"✅ Task #{task.Id} completed with no deliverables");
+                Directory.Delete(taskFolder, true);
+            }
+            else
+            {
+                // Determine task type
+                var isCodeTask = IsCodeRelatedTask(task.Description);
+                
+                if (!isCodeTask)
                 {
-                    // Copy files from local working directory to repo
-                    foreach (var file in Directory.GetFiles(localWorkingDir, "*", SearchOption.AllDirectories))
-                    {
-                        var relativePath = Path.GetRelativePath(localWorkingDir, file);
-                        var destPath = Path.Combine(repoPath, relativePath);
-                        var destDir = Path.GetDirectoryName(destPath);
-                        if (!string.IsNullOrEmpty(destDir))
-                            Directory.CreateDirectory(destDir);
-                        System.IO.File.Copy(file, destPath, true);
-                    }
-
-                    var prUrl = await CreatePullRequest(task.Id, branchName, repoPath, task.Description);
+                    // Non-coding task: deliver results via Slack and cleanup
+                    await LogThought(task.Id, iteration, ThoughtType.UserUpdate, "Delivering non-coding task results");
+                    await DeliverNonCodingTask(task.Id, taskFolder, slack);
+                }
+                else
+                {
+                    // Coding task: check for repo reference
+                    var repoReference = ExtractRepoReference(task.Description);
                     
-                    if (!string.IsNullOrEmpty(prUrl))
+                    if (!string.IsNullOrEmpty(repoReference))
                     {
-                        using var db = new AgentDbContext();
-                        var dbTask = await db.Tasks.FindAsync(task.Id);
-                        if (dbTask != null)
+                        // Existing repo referenced - clone/pull and create PR
+                        await SendSlackMessage(slack, $"📦 Working with repository: {repoReference}");
+                        await LogThought(task.Id, iteration, ThoughtType.UserUpdate, $"Processing repo: {repoReference}");
+                        
+                        var repoPath = Path.Combine("/tmp", $"luna-repo-{task.Id}");
+                        var repoAccessible = await CloneOrPullRepo(repoReference, repoPath, task.Id);
+                        
+                        if (!repoAccessible)
                         {
-                            dbTask.BranchName = branchName;
-                            dbTask.PullRequestUrl = prUrl;
-                            await db.SaveChangesAsync();
+                            // Cannot access repo - mark task as failed
+                            await UpdateTaskStatus(task.Id, TaskStatus.Failed, errorMessage: $"Unable to access repository: {repoReference}");
+                            await SendSlackMessage(slack, $"❌ Task #{task.Id} failed: Cannot access repository {repoReference}. Please grant the agent access to this repository.");
+                            await LogThought(task.Id, iteration, ThoughtType.Error, $"Cannot access repo: {repoReference}");
+                            
+                            // Cleanup
+                            Directory.Delete(taskFolder, true);
+                            if (Directory.Exists(repoPath))
+                                Directory.Delete(repoPath, true);
+                            
+                            return;
                         }
-                        await SendSlackMessage(slack, $"✅ Pull request created: {prUrl}");
-                        await LogThought(task.Id, iteration, ThoughtType.UserUpdate, $"PR created: {prUrl}");
+                        
+                        // Copy files from task folder to repo
+                        var sanitized = new string(task.Description.Take(30).Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray());
+                        var branchName = $"luna-task-{task.Id}-{sanitized}".ToLower();
+                        
+                        await RunCommand($"git checkout -b {branchName}", repoPath);
+                        
+                        foreach (var file in Directory.GetFiles(taskFolder, "*", SearchOption.AllDirectories))
+                        {
+                            var relativePath = Path.GetRelativePath(taskFolder, file);
+                            var destPath = Path.Combine(repoPath, relativePath);
+                            var destDir = Path.GetDirectoryName(destPath);
+                            if (!string.IsNullOrEmpty(destDir))
+                                Directory.CreateDirectory(destDir);
+                            System.IO.File.Copy(file, destPath, true);
+                        }
+                        
+                        // Create PR
+                        var prUrl = await CreatePullRequest(task.Id, branchName, repoPath, task.Description);
+                        
+                        if (!string.IsNullOrEmpty(prUrl))
+                        {
+                            using var db = new AgentDbContext();
+                            var dbTask = await db.Tasks.FindAsync(task.Id);
+                            if (dbTask != null)
+                            {
+                                dbTask.BranchName = branchName;
+                                dbTask.PullRequestUrl = prUrl;
+                                await db.SaveChangesAsync();
+                            }
+                            await SendSlackMessage(slack, $"✅ Pull request created: {prUrl}");
+                            await LogThought(task.Id, iteration, ThoughtType.UserUpdate, $"PR created: {prUrl}");
+                        }
+                        
+                        // Cleanup task folder and temp repo
+                        Directory.Delete(taskFolder, true);
+                        if (Directory.Exists(repoPath))
+                            Directory.Delete(repoPath, true);
+                    }
+                    else
+                    {
+                        // No repo referenced - create new repo and add user as collaborator
+                        await SendSlackMessage(slack, $"📦 Creating new repository for task #{task.Id}...");
+                        await LogThought(task.Id, iteration, ThoughtType.UserUpdate, "Creating new repository");
+                        
+                        var repoUrl = await CreateNewGithubRepo(task.Id, task.Description, slack);
+                        
+                        if (string.IsNullOrEmpty(repoUrl))
+                        {
+                            await SendSlackMessage(slack, $"⚠️ Could not create repository, but task is complete. Files saved in {taskFolder}");
+                            await LogThought(task.Id, iteration, ThoughtType.UserUpdate, $"Files saved locally: {taskFolder}");
+                        }
+                        else
+                        {
+                            // Clone the newly created repo
+                            var repoPath = Path.Combine("/tmp", $"luna-repo-{task.Id}");
+                            await RunCommand($"git clone {repoUrl} {repoPath}");
+                            
+                            // Copy files to repo
+                            foreach (var file in Directory.GetFiles(taskFolder, "*", SearchOption.AllDirectories))
+                            {
+                                var relativePath = Path.GetRelativePath(taskFolder, file);
+                                var destPath = Path.Combine(repoPath, relativePath);
+                                var destDir = Path.GetDirectoryName(destPath);
+                                if (!string.IsNullOrEmpty(destDir))
+                                    Directory.CreateDirectory(destDir);
+                                System.IO.File.Copy(file, destPath, true);
+                            }
+                            
+                            // Commit and push to main
+                            await RunCommand("git add .", repoPath);
+                            var commitMessage = $"LUNA Agent - Task #{task.Id}: {task.Description.Substring(0, Math.Min(MaxDescriptionPreviewLength, task.Description.Length))}";
+                            await RunCommand($"git commit -m \"{commitMessage}\"", repoPath);
+                            await RunCommand("git push origin main || git push origin master", repoPath);
+                            
+                            // Update task with repo URL
+                            using var db = new AgentDbContext();
+                            var dbTask = await db.Tasks.FindAsync(task.Id);
+                            if (dbTask != null)
+                            {
+                                dbTask.PullRequestUrl = repoUrl;
+                                await db.SaveChangesAsync();
+                            }
+                            
+                            await SendSlackMessage(slack, $"✅ Repository created and code pushed: {repoUrl}");
+                            if (!string.IsNullOrEmpty(userGithubName))
+                            {
+                                await SendSlackMessage(slack, $"👤 User {userGithubName} has been added as a collaborator");
+                            }
+                            await LogThought(task.Id, iteration, ThoughtType.UserUpdate, $"Repository created: {repoUrl}");
+                            
+                            // Cleanup task folder and temp repo
+                            Directory.Delete(taskFolder, true);
+                            if (Directory.Exists(repoPath))
+                                Directory.Delete(repoPath, true);
+                        }
                     }
                 }
             }
