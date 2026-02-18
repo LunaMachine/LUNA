@@ -159,8 +159,8 @@ GitHub CLI (gh) is used by the LUNA Agent for automatic PR creation:
 
 ```bash
 sudo apt install gh -y
-gh auth login
 ```
+Do not sign in yet. You need to create the luna non-root-user, the agent dedicated github, and then sign in with those accounts.
 
 ### Create the dedicated LUNA non-root-user (as root):
    ```bash
@@ -182,7 +182,15 @@ gh auth login
 
 	**For all remaining operatios, use the 'luna' user. Luna does not have root permissions and using that account will ensure that luna owns the app, files, etc. that will be setup.
 
-- Sign in as the luna user and install the .NET SDK.
+- ** ‼️ Sign in as the luna user ‼️ **
+
+### Install GitHub CLI (as root):
+
+GitHub CLI (gh) is used by the LUNA Agent for automatic PR creation:
+
+```bash
+gh auth login
+```
 
 ### Download and install .NET 10.0:
 
