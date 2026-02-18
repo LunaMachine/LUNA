@@ -1101,15 +1101,23 @@ Respond with ONLY a JSON array of step descriptions (no markdown, no code blocks
 ]";
         
         var planResponse = await CallOllama(initializerPrompt);
+        var executionPlan = ""; // Store plan for context
         if (!string.IsNullOrEmpty(planResponse))
         {
             try
             {
                 // Clean up markdown if present
                 var cleanedPlan = planResponse.Trim();
-                if (cleanedPlan.StartsWith("```json")) cleanedPlan = cleanedPlan.Substring(7).TrimStart();
-                else if (cleanedPlan.StartsWith("```")) cleanedPlan = cleanedPlan.Substring(3).TrimStart();
-                if (cleanedPlan.EndsWith("```")) cleanedPlan = cleanedPlan.Substring(0, cleanedPlan.Length - 3).TrimEnd();
+                const string jsonBlockPrefix = "```json";
+                const string codeBlockPrefix = "```";
+                
+                if (cleanedPlan.StartsWith(jsonBlockPrefix)) 
+                    cleanedPlan = cleanedPlan.Substring(jsonBlockPrefix.Length).TrimStart();
+                else if (cleanedPlan.StartsWith(codeBlockPrefix)) 
+                    cleanedPlan = cleanedPlan.Substring(codeBlockPrefix.Length).TrimStart();
+                
+                if (cleanedPlan.EndsWith(codeBlockPrefix)) 
+                    cleanedPlan = cleanedPlan.Substring(0, cleanedPlan.Length - codeBlockPrefix.Length).TrimEnd();
                 
                 var planArray = JsonDocument.Parse(cleanedPlan).RootElement;
                 var planSteps = new StringBuilder("📋 **Execution Plan:**\n");
@@ -1120,11 +1128,9 @@ Respond with ONLY a JSON array of step descriptions (no markdown, no code blocks
                     stepNum++;
                 }
                 
-                await SendSlackMessage(slack, planSteps.ToString());
-                await LogThought(task.Id, 0, ThoughtType.Planning, planSteps.ToString());
-                
-                // Add plan to context for iteration reference
-                task.Description += $"\n\n**Execution Plan:**\n{planSteps}";
+                executionPlan = planSteps.ToString();
+                await SendSlackMessage(slack, executionPlan);
+                await LogThought(task.Id, 0, ThoughtType.Planning, executionPlan);
             }
             catch (Exception ex)
             {
@@ -1143,6 +1149,12 @@ Respond with ONLY a JSON array of step descriptions (no markdown, no code blocks
         var workingDir = "/workspace";
         var contextHistory = new StringBuilder();
         var ollamaFailureCount = 0; // Track consecutive Ollama failures
+        
+        // Add execution plan to initial context if available
+        if (!string.IsNullOrEmpty(executionPlan))
+        {
+            contextHistory.AppendLine(executionPlan);
+        }
 
         while (!completed && iteration < MaxTaskIterations && task.Status != TaskStatus.Stopped)
         {
@@ -1845,13 +1857,17 @@ async Task HandleSlackMessage(MessageEvent message, ISlackApiClient slack)
                         }
                     }
                     
+                    // Store original status for message
+                    var originalStatus = task.Status;
+                    
                     // Update task status to queued
                     if (task.Status != TaskStatus.Queued)
                     {
                         await UpdateTaskStatus(taskId, TaskStatus.Queued);
                     }
                     
-                    if (task.Status == TaskStatus.Paused)
+                    // Send appropriate message based on original status
+                    if (originalStatus == TaskStatus.Paused)
                     {
                         await SendSlackMessage(slack, $"▶️ Task #{taskId} resumed and moved to front of queue");
                     }
