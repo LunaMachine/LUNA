@@ -357,7 +357,7 @@ The LUNA Agent is an autonomous agentic flow that interacts with users via Slack
 - Ollama installed and running locally with gemma3:4b model pulled
 - Slack app configured with Socket Mode enabled
 - Git configured with SSH key for GitHub access (see GitHub section)
-- LUNA configuration file `/etc/luna/luna.env` created from `luna.env.template`
+- LUNA configuration file `/.luna/luna.env` created from `luna.env.template`
 - GitHub CLI (gh) installed for automatic PR creation: `sudo apt install gh`
 
 **Setup LUNA Configuration (as luna user):**
@@ -529,7 +529,7 @@ The agent will:
 - Agent cannot install software on host
 - Files are created in containers and copied out only for PR creation
 - All executed commands are logged to database
-- LUNA tokens should be kept secure in `/etc/luna/luna.env` (mode 600)
+- LUNA tokens should be kept secure in `/.luna/luna.env` (mode 600)
 - Agent creates private repositories only when needed
 - Review pull requests before merging agent-generated code
 - **Important:** Do not include sensitive information (passwords, API keys, etc.) in task descriptions as they may be visible in PR titles and commit messages
