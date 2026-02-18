@@ -623,16 +623,29 @@ async Task<string?> CreateNewGithubRepo(int taskId, string taskDescription, ISla
             else
             {
                 await LogToDb(taskId, $"Adding {userGithubName} as collaborator");
-                var addCollabOutput = await RunCommand($"gh api repos/$(gh api user --jq .login)/{repoName}/collaborators/{userGithubName} -X PUT -f permission=push");
                 
-                if (addCollabOutput.Contains("error") || addCollabOutput.Contains("Not Found"))
+                // Get the current user's login first to avoid nested shell substitution
+                var currentUserOutput = await RunCommand("gh api user --jq .login");
+                var currentUser = currentUserOutput.Trim();
+                
+                if (string.IsNullOrEmpty(currentUser) || currentUser.Contains("error"))
                 {
-                    await LogToDb(taskId, $"Warning: Could not add {userGithubName} as collaborator: {addCollabOutput}");
-                    await SendSlackMessage(slack, $"⚠️ Could not add {userGithubName} as collaborator - please add manually");
+                    await LogToDb(taskId, $"Could not determine current GitHub user");
+                    await SendSlackMessage(slack, $"⚠️ Could not add collaborator - authentication issue");
                 }
                 else
                 {
-                    await SendSlackMessage(slack, $"✅ Added {userGithubName} as collaborator to {repoName}");
+                    var addCollabOutput = await RunCommand($"gh api repos/{currentUser}/{repoName}/collaborators/{userGithubName} -X PUT -f permission=push");
+                    
+                    if (addCollabOutput.Contains("error") || addCollabOutput.Contains("Not Found"))
+                    {
+                        await LogToDb(taskId, $"Warning: Could not add {userGithubName} as collaborator: {addCollabOutput}");
+                        await SendSlackMessage(slack, $"⚠️ Could not add {userGithubName} as collaborator - please add manually");
+                    }
+                    else
+                    {
+                        await SendSlackMessage(slack, $"✅ Added {userGithubName} as collaborator to {repoName}");
+                    }
                 }
             }
         }
@@ -1064,7 +1077,10 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
                             var sanitizedDescription = task.Description[..Math.Min(MaxDescriptionPreviewLength, task.Description.Length)]
                                 .Replace("\"", "\\\"")
                                 .Replace("$", "\\$")
-                                .Replace("`", "\\`");
+                                .Replace("`", "\\`")
+                                .Replace("\n", " ")
+                                .Replace("\r", "")
+                                .Replace("\\", "\\\\");
                             var commitMessage = $"LUNA Agent - Task #{task.Id}: {sanitizedDescription}";
                             await RunCommand($"git commit -m \"{commitMessage}\"", repoPath);
                             
