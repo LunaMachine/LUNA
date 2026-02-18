@@ -226,7 +226,7 @@ source ~/.bashrc
 
 Create a dedicated GitHub account for the Pi to handle automated pushes (e.g., for code deployments or updates). This isolates the Pi's access from your personal account.
 
-- Go to https://github.com and create a new account (e.g., `luna-pi-agent`).
+- Go to https://github.com and create a new account (e.g., `ailunamachine`).
 - Verify the email and set up basic security (enable 2FA if possible).
 - Invite this account as a collaborator to the repos it needs access to (grant push access where required).
 - Note the account's username for later use.
@@ -236,7 +236,7 @@ Create a dedicated GitHub account for the Pi to handle automated pushes (e.g., f
 Run these commands on the Pi (as `luna`, not root) to generate the key the Pi will use to push code to GitHub:
 
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/agent_github -C "luna-pi-agent"
+ssh-keygen -t ed25519 -f ~/.ssh/agent_github -C "ailunamachine"
 # Copy this to the GitHub Agent Account you created (Settings > SSH and GPG keys > New SSH key)
 cat ~/.ssh/agent_github.pub
 ```
@@ -247,14 +247,14 @@ Note: the output from `cat ~/.ssh/agent_github.pub` is the public key. Add it in
 
 The LUNA Agent uses `gh` to create pull requests. Create a Personal Access Token (PAT) for `gh` with the required scopes and store it securely.
 
-- In GitHub (as `luna-pi-agent`), go to Settings > Developer settings > Personal access tokens > Tokens (classic) and generate a new token.
+- In GitHub (as `ailunamachine`), go to Settings > Developer settings > Personal access tokens > Tokens (classic) and generate a new token.
 - Give it a name like "LUNA Agent Token" and enable scopes: `repo`, `workflow`.
 - Copy the token (it starts with `ghp_`) and keep it secure.
 
 ### Fork the LUNA repository
 
 - On GitHub, open https://github.com/dahln/LUNA and click the "Fork" button.
-- Select the destination account (your user or the `luna-pi-agent` account).
+- Select the destination account (your user or the `ailunamachine` account).
 - Note the fork URL, e.g. `https://github.com/<YOUR_USERNAME>/LUNA`.
 
 ### Clone the LUNA repo (on the Pi)
