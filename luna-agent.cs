@@ -1728,13 +1728,34 @@ async Task HandleSlackMessage(MessageEvent message, ISlackApiClient slack)
                 if (task != null && (task.Status == TaskStatus.Queued || task.Status == TaskStatus.Running))
                 {
                     await UpdateTaskStatus(taskId, TaskStatus.Paused);
+                    
+                    // Remove from queue if it's queued
+                    lock (queueLock)
+                    {
+                        var queueList = taskQueue.ToList();
+                        var wasInQueue = queueList.Any(t => t.Id == taskId);
+                        if (wasInQueue)
+                        {
+                            queueList.RemoveAll(t => t.Id == taskId);
+                            taskQueue.Clear();
+                            foreach (var t in queueList)
+                            {
+                                taskQueue.Enqueue(t);
+                            }
+                        }
+                    }
+                    
                     await SendSlackMessage(slack, $"⏸️ Task #{taskId} paused");
                     
                     // If it's the current running task, log that it will pause at next iteration
                     if (currentTask?.Id == taskId)
                     {
                         await LogToDb(taskId, "Task will pause at next iteration check");
-                        await SendSlackMessage(slack, $"ℹ️ Task #{taskId} will pause at the next iteration");
+                        await SendSlackMessage(slack, $"ℹ️ Task #{taskId} will pause at the next iteration. Next queued task will start.");
+                    }
+                    else
+                    {
+                        await SendSlackMessage(slack, $"ℹ️ Task #{taskId} removed from queue. Next task will start if available.");
                     }
                 }
                 else
@@ -1990,6 +2011,30 @@ agentUserId = authTest.UserId;
 Console.WriteLine($"Agent User ID: {agentUserId}");
 
 await SendSlackMessage(client, "🚀 LUNA Agent is online and ready!");
+
+// Load any previously queued tasks from database into queue
+Console.WriteLine("Loading queued tasks from database...");
+using (var db = new AgentDbContext())
+{
+    var queuedTasks = db.Tasks
+        .Where(t => t.Status == TaskStatus.Queued)
+        .OrderBy(t => t.CreatedAt)
+        .ToList();
+    
+    lock (queueLock)
+    {
+        foreach (var task in queuedTasks)
+        {
+            taskQueue.Enqueue(task);
+        }
+    }
+    
+    if (queuedTasks.Count > 0)
+    {
+        Console.WriteLine($"Loaded {queuedTasks.Count} queued tasks");
+        await SendSlackMessage(client, $"📋 Loaded {queuedTasks.Count} queued task(s) from previous session");
+    }
+}
 
 // Start task worker
 var workerTask = Task.Run(async () => await TaskWorker(client));
