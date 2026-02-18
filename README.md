@@ -184,14 +184,6 @@ Do not sign in yet. You need to create the luna non-root-user, the agent dedicat
 
 - ** ‼️ Sign in as the luna user ‼️ **
 
-### Install GitHub CLI (as root):
-
-GitHub CLI (gh) is used by the LUNA Agent for automatic PR creation:
-
-```bash
-gh auth login
-```
-
 ### Download and install .NET 10.0:
 
 ```
@@ -241,23 +233,38 @@ Create a dedicated GitHub account for the Pi to handle automated pushes (e.g., f
 
 ### Create GitHub SSH key for the system to access git
 
-Run these commands on the Pi (as `luna`, not root) to generate the key the Pi will use to push code to GitHub:
+Run these commands on the Pi (as `luna`, not root) to generate the SSH key the Pi will use to push code to GitHub:
 
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/agent_github -C "ailunamachine"
-# Copy this to the GitHub Agent Account you created (Settings > SSH and GPG keys > New SSH key)
-cat ~/.ssh/agent_github.pub
+ssh-keygen -t ed25519 -C "ailunamachine"
+# Press Enter to accept the default location (~/.ssh/id_ed25519)
+# Press Enter twice to skip the passphrase (or set one if you prefer)
 ```
 
-Note: the output from `cat ~/.ssh/agent_github.pub` is the public key. Add it in GitHub: Settings > SSH and GPG keys > New SSH key. Give it a descriptive title like "LUNA Pi Agent Key".
+Copy the public key to GitHub:
 
-### Sign into GitHub CLI (GH)
+```bash
+cat ~/.ssh/id_ed25519.pub
+```
 
-The LUNA Agent uses `gh` to create pull requests. Create a Personal Access Token (PAT) for `gh` with the required scopes and store it securely.
+Add it in GitHub: Settings > SSH and GPG keys > New SSH key. Give it a descriptive title like "LUNA Pi Agent Key".
+
+Test the connection:
+```bash
+ssh -T git@github.com
+# Should output: Hi <username>! You've successfully authenticated, but GitHub does not provide shell access.
+```
+
+### Create GitHub Personal Access Token (PAT)
+
+The LUNA Agent uses a Personal Access Token (PAT) to create pull requests. The token is stored in your `.env` file and used by the agent automatically.
 
 - In GitHub (as `ailunamachine`), go to Settings > Developer settings > Personal access tokens > Tokens (classic) and generate a new token.
 - Give it a name like "LUNA Agent Token" and enable scopes: `repo`, `workflow`.
 - Copy the token (it starts with `ghp_`) and keep it secure.
+- You will add this token to `~/.luna/luna.env` as `GH_TOKEN=ghp_...`
+
+**Note:** You do NOT need to run `gh auth login` - the agent uses the token from the `.env` file directly.
 
 ### Fork the LUNA repository
 
@@ -364,9 +371,6 @@ The LUNA Agent is an autonomous agentic flow that interacts with users via Slack
 
 **Verify Prerequisites:**
 ```bash
-# Check UFW
-sudo ufw status verbose
-
 # Check Docker
 docker --version
 docker ps
@@ -377,12 +381,14 @@ ollama list
 # Check LUNA configuration
 cat ~/.luna/luna.env
 
-# Check Git/SSH
+# Check Git/SSH (should output: "Hi <username>! You've successfully authenticated...")
 ssh -T git@github.com
 
-# Check GitHub CLI (optional but recommended for PR creation)
-gh --version
+# Verify .env has all required tokens
+grep -E "SLACK_BOT_TOKEN|SLACK_APP_TOKEN|SLACK_CHANNEL_ID|GH_TOKEN" ~/.luna/luna.env
 ```
+
+**Note:** UFW firewall status was configured by root earlier and cannot be checked by the luna user (no sudo access needed).
 
 **Create the systemd service:**
 ```bash
