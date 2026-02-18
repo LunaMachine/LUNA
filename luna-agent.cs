@@ -635,11 +635,11 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
             var cleanedResponse = aiResponse.Trim();
             
             // Remove opening markdown block
-            if (cleanedResponse.StartsWith("```json"))
+            if (cleanedResponse.StartsWith("```json") && cleanedResponse.Length > 7)
             {
                 cleanedResponse = cleanedResponse.Substring(7).TrimStart(); // Remove ```json and any leading whitespace/newlines
             }
-            else if (cleanedResponse.StartsWith("```"))
+            else if (cleanedResponse.StartsWith("```") && cleanedResponse.Length > 3)
             {
                 cleanedResponse = cleanedResponse.Substring(3).TrimStart(); // Remove ``` and any leading whitespace/newlines
             }
@@ -744,7 +744,10 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
             }
             catch (Exception ex)
             {
-                var errorMsg = $"Error parsing AI response: {ex.Message}. Raw response: {cleanedResponse.Substring(0, Math.Min(MaxErrorMessagePreviewLength, cleanedResponse.Length))}";
+                var responsePreview = cleanedResponse.Length > MaxErrorMessagePreviewLength 
+                    ? cleanedResponse.Substring(0, MaxErrorMessagePreviewLength) 
+                    : cleanedResponse;
+                var errorMsg = $"Error parsing AI response: {ex.Message}. Raw response: {responsePreview}";
                 await LogToDb(task.Id, errorMsg);
                 await LogThought(task.Id, iteration, ThoughtType.Error, $"Error: {ex.Message}");
                 await SendSlackMessage(slack, $"⚠️ Error processing AI response: {ex.Message}");
