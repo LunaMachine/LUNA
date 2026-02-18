@@ -186,6 +186,21 @@ async Task SendSlackMessage(ISlackApiClient slack, string message)
     }
 }
 
+string CleanMarkdownFromResponse(string response)
+{
+    var cleaned = response.Trim();
+    
+    if (cleaned.StartsWith(MarkdownJsonBlockPrefix)) 
+        cleaned = cleaned.Substring(MarkdownJsonBlockPrefix.Length).TrimStart();
+    else if (cleaned.StartsWith(MarkdownCodeBlockPrefix)) 
+        cleaned = cleaned.Substring(MarkdownCodeBlockPrefix.Length).TrimStart();
+    
+    if (cleaned.EndsWith(MarkdownCodeBlockPrefix)) 
+        cleaned = cleaned.Substring(0, cleaned.Length - MarkdownCodeBlockPrefix.Length).TrimEnd();
+    
+    return cleaned.Trim();
+}
+
 async Task<string> CallOllama(string prompt, string? model = null, int retryCount = 0)
 {
     try
@@ -556,16 +571,7 @@ Respond with ONLY the JSON object, no other text:";
         await LogToDb(taskId, $"AI classification response: {aiResponse}");
         
         // Clean up markdown code blocks if present
-        var cleanedResponse = aiResponse.Trim();
-        if (cleanedResponse.StartsWith("```json"))
-            cleanedResponse = cleanedResponse.Substring(7).TrimStart();
-        else if (cleanedResponse.StartsWith("```"))
-            cleanedResponse = cleanedResponse.Substring(3).TrimStart();
-        
-        if (cleanedResponse.EndsWith("```"))
-            cleanedResponse = cleanedResponse.Substring(0, cleanedResponse.Length - 3).TrimEnd();
-        
-        cleanedResponse = cleanedResponse.Trim();
+        var cleanedResponse = CleanMarkdownFromResponse(aiResponse);
         
         var classification = JsonDocument.Parse(cleanedResponse);
         var root = classification.RootElement;
@@ -1114,15 +1120,7 @@ Respond with ONLY a JSON array of step descriptions (no markdown, no code blocks
             try
             {
                 // Clean up markdown if present
-                var cleanedPlan = planResponse.Trim();
-                
-                if (cleanedPlan.StartsWith(MarkdownJsonBlockPrefix)) 
-                    cleanedPlan = cleanedPlan.Substring(MarkdownJsonBlockPrefix.Length).TrimStart();
-                else if (cleanedPlan.StartsWith(MarkdownCodeBlockPrefix)) 
-                    cleanedPlan = cleanedPlan.Substring(MarkdownCodeBlockPrefix.Length).TrimStart();
-                
-                if (cleanedPlan.EndsWith(MarkdownCodeBlockPrefix)) 
-                    cleanedPlan = cleanedPlan.Substring(0, cleanedPlan.Length - MarkdownCodeBlockPrefix.Length).TrimEnd();
+                var cleanedPlan = CleanMarkdownFromResponse(planResponse);
                 
                 var planArray = JsonDocument.Parse(cleanedPlan).RootElement;
                 var planSteps = new StringBuilder("📋 **Execution Plan:**\n");
@@ -1153,7 +1151,11 @@ Respond with ONLY a JSON array of step descriptions (no markdown, no code blocks
         var completed = false;
         var workingDir = "/workspace";
         var contextHistory = new StringBuilder();
-        var ollamaFailureCount = 0; // Track consecutive Ollama failures
+        // Track consecutive empty AI responses across iterations
+        // Note: CallOllama has its own retry logic (up to MaxOllamaRetries retries per call)
+        // If CallOllama exhausts retries and returns empty, ollamaFailureCount increments
+        // After MaxOllamaRetries consecutive empty responses (across iterations), pause task
+        var ollamaFailureCount = 0;
         
         // Add execution plan to initial context if available
         if (!string.IsNullOrEmpty(executionPlan))
@@ -1189,7 +1191,9 @@ Respond with ONLY a JSON array of step descriptions (no markdown, no code blocks
             await LogToDb(task.Id, $"Iteration {iteration} started");
             await LogThought(task.Id, iteration, ThoughtType.Observation, $"Starting iteration {iteration}");
             
-            // Check iteration timeout before AI call
+            // Check if iteration has already exceeded time limit before making potentially slow AI call
+            // Note: This mainly applies to iterations where previous operations (commands, file operations) 
+            // consumed most of the time budget. First iteration will always pass this check.
             var iterationElapsed = (DateTime.UtcNow - iterationStartTime).TotalSeconds;
             if (iterationElapsed > MaxIterationTimeSeconds)
             {
@@ -1255,25 +1259,7 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
             }
 
             // Strip markdown code blocks if present (common AI wrapping pattern)
-            var cleanedResponse = aiResponse.Trim();
-            
-            // Remove opening markdown block
-            if (cleanedResponse.StartsWith("```json") && cleanedResponse.Length > 7)
-            {
-                cleanedResponse = cleanedResponse.Substring(7).TrimStart(); // Remove ```json and any leading whitespace/newlines
-            }
-            else if (cleanedResponse.StartsWith("```") && cleanedResponse.Length > 3)
-            {
-                cleanedResponse = cleanedResponse.Substring(3).TrimStart(); // Remove ``` and any leading whitespace/newlines
-            }
-            
-            // Remove closing markdown block
-            if (cleanedResponse.EndsWith("```") && cleanedResponse.Length >= 3)
-            {
-                cleanedResponse = cleanedResponse.Substring(0, cleanedResponse.Length - 3).TrimEnd();
-            }
-            
-            cleanedResponse = cleanedResponse.Trim();
+            var cleanedResponse = CleanMarkdownFromResponse(aiResponse);
 
             // Parse AI response
             try
