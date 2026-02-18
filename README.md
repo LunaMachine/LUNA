@@ -260,7 +260,8 @@ ssh -T git@github.com
 The LUNA Agent uses a Personal Access Token (PAT) to create pull requests, create new repositories, and manage collaborators. The token is stored in your `.env` file and used by the agent automatically.
 
 - In GitHub (as `ailunamachine`), go to Settings > Developer settings > Personal access tokens > Tokens (classic) and generate a new token.
-- Give it a name like "LUNA Agent Token" and enable scopes: `repo`, `workflow`, `admin:org` (for managing repository collaborators).
+- Give it a name like "LUNA Agent Token" and enable scopes: `repo`, `workflow`.
+- The `repo` scope includes permissions for managing collaborators on repositories.
 - Copy the token (it starts with `ghp_`) and keep it secure.
 - You will add this token to `~/.luna/luna.env` as `GH_TOKEN=ghp_...`
 

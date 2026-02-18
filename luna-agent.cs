@@ -508,9 +508,9 @@ string? ExtractRepoReference(string description)
     // Try to find GitHub repo references in the task description
     // Patterns: github.com/owner/repo, owner/repo, or full URLs
     var patterns = new[] {
-        @"github\.com/([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)",
-        @"(?:^|\s)([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)(?:\s|$)",
-        @"https?://github\.com/([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)"
+        @"github\.com/([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)",
+        @"(?:^|\s)([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)(?:\s|$)",
+        @"https?://github\.com/([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)"
     };
     
     foreach (var pattern in patterns)
@@ -536,7 +536,24 @@ async Task<bool> CloneOrPullRepo(string repoReference, string targetPath, int ta
             // Repo already exists, pull latest
             await LogToDb(taskId, $"Pulling latest changes from {repoReference}");
             await RunCommand("git fetch origin", targetPath);
-            await RunCommand("git pull origin main || git pull origin master", targetPath);
+            
+            // Determine the default branch
+            var defaultBranch = await RunCommand("git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'", targetPath);
+            if (string.IsNullOrWhiteSpace(defaultBranch))
+            {
+                // Fallback: try to detect from remote branches
+                defaultBranch = await RunCommand("git branch -r | grep -o 'origin/main\\|origin/master' | head -1 | sed 's@origin/@@'", targetPath);
+            }
+            defaultBranch = defaultBranch.Trim();
+            if (string.IsNullOrWhiteSpace(defaultBranch))
+                defaultBranch = "main"; // Final fallback
+            
+            var pullOutput = await RunCommand($"git pull origin {defaultBranch}", targetPath);
+            if (pullOutput.Contains("fatal") || pullOutput.Contains("error"))
+            {
+                await LogToDb(taskId, $"Failed to pull from {defaultBranch}: {pullOutput}");
+                return false;
+            }
             return true;
         }
         else
@@ -592,7 +609,16 @@ async Task<string?> CreateNewGithubRepo(int taskId, string taskDescription, ISla
         {
             await LogToDb(taskId, $"Adding {userGithubName} as collaborator");
             var addCollabOutput = await RunCommand($"gh api repos/$(gh api user --jq .login)/{repoName}/collaborators/{userGithubName} -X PUT -f permission=push");
-            await SendSlackMessage(slack, $"✅ Added {userGithubName} as collaborator to {repoName}");
+            
+            if (addCollabOutput.Contains("error") || addCollabOutput.Contains("Not Found"))
+            {
+                await LogToDb(taskId, $"Warning: Could not add {userGithubName} as collaborator: {addCollabOutput}");
+                await SendSlackMessage(slack, $"⚠️ Could not add {userGithubName} as collaborator - please add manually");
+            }
+            else
+            {
+                await SendSlackMessage(slack, $"✅ Added {userGithubName} as collaborator to {repoName}");
+            }
         }
         
         // Get the repo URL
@@ -633,7 +659,7 @@ async Task DeliverNonCodingTask(int taskId, string taskFolder, ISlackApiClient s
             if (fileInfo.Extension.ToLower() is ".txt" or ".md" or ".json" or ".csv" or ".log")
             {
                 var content = await System.IO.File.ReadAllTextAsync(file);
-                var truncated = content.Length > 3000 ? content.Substring(0, 3000) + "\n\n... (truncated)" : content;
+                var truncated = content.Length > 3000 ? content[..3000] + "\n\n... (truncated)" : content;
                 await SendSlackMessage(slack, $"📄 **{relativePath}**\n```\n{truncated}\n```");
             }
             else
@@ -1019,9 +1045,25 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
                             
                             // Commit and push to main
                             await RunCommand("git add .", repoPath);
-                            var commitMessage = $"LUNA Agent - Task #{task.Id}: {task.Description.Substring(0, Math.Min(MaxDescriptionPreviewLength, task.Description.Length))}";
+                            var sanitizedDescription = task.Description
+                                .Substring(0, Math.Min(MaxDescriptionPreviewLength, task.Description.Length))
+                                .Replace("\"", "\\\"")
+                                .Replace("$", "\\$")
+                                .Replace("`", "\\`");
+                            var commitMessage = $"LUNA Agent - Task #{task.Id}: {sanitizedDescription}";
                             await RunCommand($"git commit -m \"{commitMessage}\"", repoPath);
-                            await RunCommand("git push origin main || git push origin master", repoPath);
+                            
+                            // Determine default branch and push
+                            var defaultBranch = await RunCommand("git symbolic-ref --short HEAD", repoPath);
+                            defaultBranch = defaultBranch.Trim();
+                            if (string.IsNullOrWhiteSpace(defaultBranch))
+                                defaultBranch = "main";
+                            
+                            var pushOutput = await RunCommand($"git push origin {defaultBranch}", repoPath);
+                            if (pushOutput.Contains("fatal") || pushOutput.Contains("error"))
+                            {
+                                await LogToDb(task.Id, $"Warning: Failed to push to {defaultBranch}: {pushOutput}");
+                            }
                             
                             // Update task with repo URL
                             using var db = new AgentDbContext();
