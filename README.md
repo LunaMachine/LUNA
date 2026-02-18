@@ -425,12 +425,12 @@ ExecStart=/home/luna/.dotnet/dotnet screen.cs
 Restart=on-failure
 RestartSec=30s
 
-# Resource limits (agent can be resource-intensive during code generation)
-# Pi 5 16GB: MemoryMax=8G, CPUQuota=75%
-# Pi 5 8GB:  MemoryMax=4G, CPUQuota=50%
-# Pi 4 4GB:  MemoryMax=2G, CPUQuota=25%
-MemoryMax=8G
-CPUQuota=75%
+# Resource limits (agent process only - Ollama runs separately and gets rest of system memory)
+# Pi 5 16GB: MemoryMax=2G, CPUQuota=25%  (Ollama ~6-8GB, Agent ~2GB, System ~2-4GB, agent is I/O-bound)
+# Pi 5 8GB:  MemoryMax=1G, CPUQuota=25%  (Ollama ~6-8GB is tight, Agent ~1GB, System ~1GB)
+# Pi 4 4GB:  MemoryMax=500M, CPUQuota=25% (Very constrained - monitor performance)
+MemoryMax=2G
+CPUQuota=25%
 
 # Security: Agent does NOT have root access on host
 # Agent runs with docker group membership to create containers
