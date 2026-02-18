@@ -47,6 +47,8 @@ const int MaxDescriptionPreviewLength = 50;
 const int MaxLogPreviewLength = 2000;
 const int MaxContextHistoryEntryLength = 5000;
 const int MaxErrorMessagePreviewLength = 2000;
+const int MaxIterationTimeSeconds = 180; // 3 minutes per iteration
+const int MaxOllamaRetries = 3; // Number of retries for Ollama failures
 
 // Load Slack tokens from file
 if (System.IO.File.Exists(slackConfigFile))
@@ -177,7 +179,7 @@ async Task SendSlackMessage(ISlackApiClient slack, string message)
     }
 }
 
-async Task<string> CallOllama(string prompt, string? model = null)
+async Task<string> CallOllama(string prompt, string? model = null, int retryCount = 0)
 {
     try
     {
@@ -201,6 +203,12 @@ async Task<string> CallOllama(string prompt, string? model = null)
             if (string.IsNullOrWhiteSpace(responseJson))
             {
                 Console.WriteLine("⚠️  Ollama returned empty response");
+                if (retryCount < MaxOllamaRetries)
+                {
+                    Console.WriteLine($"   Retrying... (attempt {retryCount + 1}/{MaxOllamaRetries})");
+                    await Task.Delay(2000 * (retryCount + 1)); // Exponential backoff
+                    return await CallOllama(prompt, model, retryCount + 1);
+                }
                 return "";
             }
             
@@ -213,17 +221,35 @@ async Task<string> CallOllama(string prompt, string? model = null)
             {
                 Console.WriteLine($"⚠️  Failed to parse Ollama JSON response: {jex.Message}");
                 Console.WriteLine($"   Response was: {responseJson.Substring(0, Math.Min(200, responseJson.Length))}...");
+                if (retryCount < MaxOllamaRetries)
+                {
+                    Console.WriteLine($"   Retrying... (attempt {retryCount + 1}/{MaxOllamaRetries})");
+                    await Task.Delay(2000 * (retryCount + 1)); // Exponential backoff
+                    return await CallOllama(prompt, model, retryCount + 1);
+                }
                 return "";
             }
         }
         else
         {
             Console.WriteLine($"⚠️  Ollama HTTP error: {response.StatusCode}");
+            if (retryCount < MaxOllamaRetries)
+            {
+                Console.WriteLine($"   Retrying... (attempt {retryCount + 1}/{MaxOllamaRetries})");
+                await Task.Delay(2000 * (retryCount + 1)); // Exponential backoff
+                return await CallOllama(prompt, model, retryCount + 1);
+            }
         }
     }
     catch (Exception ex)
     {
         Console.WriteLine($"Ollama error: {ex.Message}");
+        if (retryCount < MaxOllamaRetries)
+        {
+            Console.WriteLine($"   Retrying... (attempt {retryCount + 1}/{MaxOllamaRetries})");
+            await Task.Delay(2000 * (retryCount + 1)); // Exponential backoff
+            return await CallOllama(prompt, model, retryCount + 1);
+        }
     }
     return "";
 }
@@ -1054,15 +1080,74 @@ async Task ProcessTask(WorkTask task, ISlackApiClient slack)
         await SendSlackMessage(slack, $"🐳 Created isolated container for task #{task.Id}");
         await LogThought(task.Id, 0, ThoughtType.Observation, "Docker container created successfully");
 
+        // ============================================================================
+        // INITIALIZER STEP: Create multi-step plan for the task
+        // ============================================================================
+        await SendSlackMessage(slack, $"📋 Creating execution plan for task #{task.Id}...");
+        await LogThought(task.Id, 0, ThoughtType.Planning, "Running initializer: creating multi-step execution plan");
+        
+        var initializerPrompt = $@"You are LUNA, an AI agent. Review this task and create a detailed multi-step execution plan.
+
+Task: {task.Description}
+
+Create a numbered list of specific steps to complete this task. Each step should be completable in one iteration.
+If a step fails, the plan should allow for revisiting that step in the next iteration.
+
+Respond with ONLY a JSON array of step descriptions (no markdown, no code blocks):
+[
+  ""Step 1 description"",
+  ""Step 2 description"",
+  ...
+]";
+        
+        var planResponse = await CallOllama(initializerPrompt);
+        if (!string.IsNullOrEmpty(planResponse))
+        {
+            try
+            {
+                // Clean up markdown if present
+                var cleanedPlan = planResponse.Trim();
+                if (cleanedPlan.StartsWith("```json")) cleanedPlan = cleanedPlan.Substring(7).TrimStart();
+                else if (cleanedPlan.StartsWith("```")) cleanedPlan = cleanedPlan.Substring(3).TrimStart();
+                if (cleanedPlan.EndsWith("```")) cleanedPlan = cleanedPlan.Substring(0, cleanedPlan.Length - 3).TrimEnd();
+                
+                var planArray = JsonDocument.Parse(cleanedPlan).RootElement;
+                var planSteps = new StringBuilder("📋 **Execution Plan:**\n");
+                int stepNum = 1;
+                foreach (var step in planArray.EnumerateArray())
+                {
+                    planSteps.AppendLine($"{stepNum}. {step.GetString()}");
+                    stepNum++;
+                }
+                
+                await SendSlackMessage(slack, planSteps.ToString());
+                await LogThought(task.Id, 0, ThoughtType.Planning, planSteps.ToString());
+                
+                // Add plan to context for iteration reference
+                task.Description += $"\n\n**Execution Plan:**\n{planSteps}";
+            }
+            catch (Exception ex)
+            {
+                await LogThought(task.Id, 0, ThoughtType.Error, $"Failed to parse plan: {ex.Message}. Continuing without formal plan.");
+                await SendSlackMessage(slack, "⚠️ Could not create structured plan, proceeding with task...");
+            }
+        }
+        else
+        {
+            await SendSlackMessage(slack, "⚠️ Initializer did not respond, proceeding with task...");
+        }
+
         // Agentic loop with iteration
         var iteration = 0;
         var completed = false;
         var workingDir = "/workspace";
         var contextHistory = new StringBuilder();
+        var ollamaFailureCount = 0; // Track consecutive Ollama failures
 
         while (!completed && iteration < MaxTaskIterations && task.Status != TaskStatus.Stopped)
         {
             iteration++;
+            var iterationStartTime = DateTime.UtcNow;
             
             // Check for pause/stop at start of each iteration
             using (var db = new AgentDbContext())
@@ -1123,10 +1208,36 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
 
             if (string.IsNullOrEmpty(aiResponse))
             {
-                await SendSlackMessage(slack, $"⚠️ AI did not respond for task #{task.Id}");
-                await LogThought(task.Id, iteration, ThoughtType.Error, "AI did not respond");
+                ollamaFailureCount++;
+                await SendSlackMessage(slack, $"⚠️ AI did not respond for task #{task.Id} (failure {ollamaFailureCount})");
+                await LogThought(task.Id, iteration, ThoughtType.Error, $"AI did not respond (failure {ollamaFailureCount})");
                 contextHistory.AppendLine($"[Iteration {iteration}] ERROR: AI did not respond");
+                
+                // After multiple consecutive failures, pause the task and try next one
+                if (ollamaFailureCount >= 3)
+                {
+                    await SendSlackMessage(slack, $"⏸️ Task #{task.Id} paused due to repeated AI failures. Will try next task in queue.");
+                    await LogThought(task.Id, iteration, ThoughtType.Error, "Task paused due to repeated AI failures");
+                    await UpdateTaskStatus(task.Id, TaskStatus.Paused, errorMessage: $"Paused after {ollamaFailureCount} consecutive AI failures");
+                    return; // Exit and allow next task to run
+                }
+                
                 await Task.Delay(5000);
+                continue;
+            }
+            
+            // Reset failure count on successful response
+            ollamaFailureCount = 0;
+
+            // Check iteration timeout (3 minutes)
+            var iterationElapsed = (DateTime.UtcNow - iterationStartTime).TotalSeconds;
+            if (iterationElapsed > MaxIterationTimeSeconds)
+            {
+                await SendSlackMessage(slack, $"⏱️ Iteration {iteration} reached time limit ({MaxIterationTimeSeconds}s). Progress recorded, continuing in next iteration...");
+                await LogThought(task.Id, iteration, ThoughtType.Observation, $"Iteration reached time limit. Elapsed: {iterationElapsed:F0}s");
+                contextHistory.AppendLine($"[Iteration {iteration}] Time limit reached ({iterationElapsed:F0}s). Continuing with fresh context in next iteration.");
+                // Continue to next iteration with a fresh start
+                await Task.Delay(2000);
                 continue;
             }
 
@@ -1678,7 +1789,14 @@ async Task HandleSlackMessage(MessageEvent message, ISlackApiClient slack)
                 var task = await db.Tasks.FindAsync(taskId);
                 if (task != null)
                 {
-                    // If there's a current task, pause it
+                    // If this task is already running, nothing to do
+                    if (task.Status == TaskStatus.Running && currentTask?.Id == taskId)
+                    {
+                        await SendSlackMessage(slack, $"▶️ Task #{taskId} is already running");
+                        return;
+                    }
+                    
+                    // If there's a different current task, pause it
                     if (currentTask != null && currentTask.Id != taskId)
                     {
                         await UpdateTaskStatus(currentTask.Id, TaskStatus.Paused);
@@ -1689,32 +1807,36 @@ async Task HandleSlackMessage(MessageEvent message, ISlackApiClient slack)
                         }
                     }
 
-                    // Start or resume the specified task
-                    if (task.Status == TaskStatus.Paused)
+                    // Remove task from queue if it's already there (we'll re-add it at front)
+                    lock (queueLock)
+                    {
+                        var queueList = taskQueue.ToList();
+                        queueList.RemoveAll(t => t.Id == taskId);
+                        taskQueue.Clear();
+                        
+                        // Add specified task at the front of queue
+                        taskQueue.Enqueue(task);
+                        
+                        // Re-add other tasks after it
+                        foreach (var t in queueList)
+                        {
+                            taskQueue.Enqueue(t);
+                        }
+                    }
+                    
+                    // Update task status to queued
+                    if (task.Status != TaskStatus.Queued)
                     {
                         await UpdateTaskStatus(taskId, TaskStatus.Queued);
-                        lock (queueLock)
-                        {
-                            taskQueue.Enqueue(task);
-                        }
-                        await SendSlackMessage(slack, $"▶️ Task #{taskId} resumed");
                     }
-                    else if (task.Status == TaskStatus.Queued)
+                    
+                    if (task.Status == TaskStatus.Paused)
                     {
-                        await SendSlackMessage(slack, $"▶️ Task #{taskId} is already queued");
-                    }
-                    else if (task.Status == TaskStatus.Running)
-                    {
-                        await SendSlackMessage(slack, $"▶️ Task #{taskId} is already running");
+                        await SendSlackMessage(slack, $"▶️ Task #{taskId} resumed and moved to front of queue");
                     }
                     else
                     {
-                        await UpdateTaskStatus(taskId, TaskStatus.Queued);
-                        lock (queueLock)
-                        {
-                            taskQueue.Enqueue(task);
-                        }
-                        await SendSlackMessage(slack, $"▶️ Task #{taskId} started");
+                        await SendSlackMessage(slack, $"▶️ Task #{taskId} moved to front of queue and will start next");
                     }
                 }
                 else
@@ -1730,6 +1852,52 @@ async Task HandleSlackMessage(MessageEvent message, ISlackApiClient slack)
             {
                 await UpdateTaskStatus(taskId, TaskStatus.Stopped);
                 await SendSlackMessage(slack, $"🛑 Task #{taskId} stopped");
+            }
+        }
+        else if (text.StartsWith("!delete"))
+        {
+            var parts = text.Split(' ', 2);
+            if (parts.Length == 2 && int.TryParse(parts[1], out var taskId))
+            {
+                using var db = new AgentDbContext();
+                var task = await db.Tasks.FindAsync(taskId);
+                if (task != null)
+                {
+                    // If it's the current task, clear it from current
+                    if (currentTask?.Id == taskId)
+                    {
+                        lock (queueLock)
+                        {
+                            currentTask = null;
+                        }
+                    }
+                    
+                    // Remove from queue if present
+                    lock (queueLock)
+                    {
+                        var queueList = taskQueue.ToList();
+                        queueList.RemoveAll(t => t.Id == taskId);
+                        taskQueue.Clear();
+                        foreach (var t in queueList)
+                        {
+                            taskQueue.Enqueue(t);
+                        }
+                    }
+                    
+                    // Delete from database (cascade will delete related thoughts)
+                    db.Tasks.Remove(task);
+                    await db.SaveChangesAsync();
+                    
+                    await SendSlackMessage(slack, $"🗑️ Task #{taskId} deleted");
+                }
+                else
+                {
+                    await SendSlackMessage(slack, $"Task #{taskId} not found");
+                }
+            }
+            else
+            {
+                await SendSlackMessage(slack, "Usage: !delete <task_id>");
             }
         }
         else if (text.StartsWith("!queue"))
@@ -1758,6 +1926,7 @@ async Task HandleSlackMessage(MessageEvent message, ISlackApiClient slack)
 **!pause <task_id>** - Pause a running or queued task
 **!start <task_id>** - Start a task (pauses current task if needed, starts or resumes specified task)
 **!stop <task_id>** - Stop a task
+**!delete <task_id>** - Delete a task (can be used at any time, regardless of task state)
 **!update <task_id> <message>** - Send additional context to a running task
 **!system** - Get current system status (CPU, RAM, temperature, Ollama)
 **!help** - Show this help message
