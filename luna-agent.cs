@@ -495,7 +495,7 @@ async Task<(int cpu, int ram, double temp)> GetSystemStats()
         double temp;
         try
         {
-            string raw = File.ReadAllText("/sys/class/thermal/thermal_zone0/temp").Trim();
+            string raw = System.IO.File.ReadAllText("/sys/class/thermal/thermal_zone0/temp").Trim();
             temp = double.TryParse(raw, out var t) ? t / 1000.0 : -1.0;
         }
         catch
@@ -943,18 +943,11 @@ async Task<bool> TryUploadFileToSlack(ISlackApiClient slack, string filePath, st
             useAsync: true
         );
         
-        // Use positional parameters for the Upload method
-        var uploadResponse = await slack.Files.Upload(
-            fileStream,           // Stream content
-            fileName,            // filename
-            null,                // filetype
-            null,                // title (we'll set it separately if possible)
-            null,                // initialComment
-            null,                // threadTs
-            new[] { agentChannelId }  // channels
-        );
+        // Use the FileUpload overload to avoid the obsolete Stream-based Upload method
+        var fileUpload = new FileUpload(fileName, fileStream);
+        var uploadResponse = await slack.Files.Upload(fileUpload, agentChannelId);
         
-        if (uploadResponse != null && uploadResponse.File != null)
+        if (uploadResponse != null && uploadResponse.Id != null)
         {
             await SendSlackMessage(slack, $"📎 Uploaded: {fileName}");
             await LogToDb(taskId, $"Successfully uploaded {fileName} to Slack");
