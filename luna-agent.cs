@@ -39,6 +39,7 @@ var userGithubName = "";
 const double OllamaTemperature = 0.7;
 const int OllamaMaxTokens = 2048;
 const string OllamaDefaultModel = "gemma3:4b";
+const int OllamaDefaultTimeoutMinutes = 30; // Default timeout for Ollama HTTP requests (30 minutes for long-running tasks)
 
 // Task Processing Configuration
 const int MaxTaskIterations = 100;
@@ -106,8 +107,23 @@ await CleanupStaleContainers();
 var taskQueue = new Queue<WorkTask>();
 WorkTask? currentTask = null;
 var queueLock = new object();
+
+// Configure Ollama HTTP client with extended timeout for long-running AI tasks
+// Can be overridden via OLLAMA_TIMEOUT_MINUTES environment variable
+var ollamaTimeoutMinutes = OllamaDefaultTimeoutMinutes;
+var ollamaTimeoutEnv = Environment.GetEnvironmentVariable("OLLAMA_TIMEOUT_MINUTES");
+if (!string.IsNullOrEmpty(ollamaTimeoutEnv) && int.TryParse(ollamaTimeoutEnv, out var customTimeout) && customTimeout > 0)
+{
+    ollamaTimeoutMinutes = customTimeout;
+    Console.WriteLine($"Using custom Ollama timeout: {ollamaTimeoutMinutes} minutes");
+}
+else
+{
+    Console.WriteLine($"Using default Ollama timeout: {ollamaTimeoutMinutes} minutes");
+}
+
 var httpClient = new HttpClient();
-httpClient.Timeout = TimeSpan.FromMinutes(5);
+httpClient.Timeout = TimeSpan.FromMinutes(ollamaTimeoutMinutes);
 
 // ============================================================================
 // Helper Functions
