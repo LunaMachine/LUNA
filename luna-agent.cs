@@ -76,6 +76,7 @@ if (System.IO.File.Exists(slackConfigFile))
             if (key == "SLACK_APP_TOKEN" || key == "xapp") slackAppToken = value;
             if (key == "SLACK_CHANNEL_ID") agentChannelId = value;
             if (key == "UserGithubName") userGithubName = value;
+            if (key == "GH_TOKEN") Environment.SetEnvironmentVariable("GH_TOKEN", value);
         }
     }
 }
