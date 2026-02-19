@@ -594,33 +594,53 @@ async Task<bool> EnsureLunaResearchRepo()
     {
         var repoPath = GetLunaResearchRepoPath();
         var gitDir = Path.Combine(repoPath, ".git");
+        var homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-        if (Directory.Exists(gitDir))
-            return true;
-
-        // Create private GitHub repository (ignore error if it already exists remotely)
-        Console.WriteLine($"Creating private GitHub repository: {LunaResearchRepoName}");
-        await RunCommand($"gh repo create {LunaResearchRepoName} --private");
-
-        // Clone repo to host filesystem
         if (Directory.Exists(repoPath))
-            Directory.Delete(repoPath, true);
+        {
+            if (Directory.Exists(gitDir))
+            {
+                // Folder and git repo exist - pull to get latest and verify connection
+                Console.WriteLine($"luna-research folder exists, pulling latest changes...");
+                var pullOutput = await RunCommand("git pull", repoPath);
+                Console.WriteLine($"Pull output: {pullOutput}");
 
-        var cloneOutput = await RunCommand($"gh repo clone {LunaResearchRepoName} {repoPath}");
-        Console.WriteLine($"Clone output: {cloneOutput}");
+                if (pullOutput.StartsWith("Error (exit", StringComparison.OrdinalIgnoreCase) ||
+                    pullOutput.Contains("fatal", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine($"Warning: git pull failed for luna-research: {pullOutput}");
+                    return false;
+                }
 
-        // If the repo was empty (no commits), initialize it manually
+                return true;
+            }
+            else
+            {
+                // Folder exists but is not a git repo - remove it and recreate
+                Directory.Delete(repoPath, true);
+            }
+        }
+
+        // Folder does not exist - create the GitHub repo and clone it (do not pre-create the folder)
+        Console.WriteLine($"Creating private GitHub repository: {LunaResearchRepoName}");
+
+        // Use --clone so the repo is created and cloned in a single gh cli call.
+        // Run from homeDir so the clone lands at homeDir/luna-research (== repoPath).
+        var createOutput = await RunCommand($"gh repo create {LunaResearchRepoName} --private --clone", homeDir);
+        Console.WriteLine($"Create/clone output: {createOutput}");
+
+        // If the remote repo already existed, the create step may have failed; fall back to just cloning
         if (!Directory.Exists(gitDir))
         {
-            Directory.CreateDirectory(repoPath);
-            await RunCommand("git init", repoPath);
-            var repoUrlOutput = await RunCommand($"gh repo view {LunaResearchRepoName} --json url --jq .url");
-            var sshUrlOutput = await RunCommand($"gh repo view {LunaResearchRepoName} --json sshUrl --jq .sshUrl");
-            var remoteUrl = sshUrlOutput.Trim();
-            if (string.IsNullOrEmpty(remoteUrl) || remoteUrl.Contains("error"))
-                remoteUrl = repoUrlOutput.Trim();
-            if (!string.IsNullOrEmpty(remoteUrl) && !remoteUrl.Contains("error"))
-                await RunCommand($"git remote add origin {remoteUrl}", repoPath);
+            Console.WriteLine($"Attempting to clone existing remote repository...");
+            var cloneOutput = await RunCommand($"gh repo clone {LunaResearchRepoName} {repoPath}", homeDir);
+            Console.WriteLine($"Clone output: {cloneOutput}");
+        }
+
+        if (!Directory.Exists(gitDir))
+        {
+            Console.WriteLine($"Warning: Could not set up luna-research repository");
+            return false;
         }
 
         // Configure git identity
