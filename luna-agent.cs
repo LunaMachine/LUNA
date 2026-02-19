@@ -1381,6 +1381,11 @@ IMPORTANT:
 - Do NOT ask follow-up questions - proceed with the task autonomously.
 - If the task is complete, use action ""complete"".
 - Only use action ""need_input"" if you CANNOT proceed without critical information from the user.
+- To write, create, or update files with any text content, ALWAYS use the ""create_file"" action. Do NOT use shell commands like echo, printf, cat, or heredocs to write file content — these fail when the text contains apostrophes, quotes, or other special characters.
+- For ""create_file"", set ""file_path"" to a path relative to /workspace (e.g. ""essay.txt"" or ""src/main.py""), NOT an absolute path like ""/workspace/essay.txt"".
+- To update an existing file, use ""create_file"" with the same relative ""file_path"" and the complete new file content — this overwrites the file in place. Use the exact same filename and path recorded in the previous iteration context.
+- To read a file before updating it, use the ""command"" action with: cat {workingDir}/<filename>
+- If a previous iteration's command failed with an error, do NOT repeat the same command. Analyze the error and use a different approach (e.g. switch from a shell command to the ""create_file"" action, or adjust the command to avoid the issue).
 
 {(contextHistory.Length > 0 ? $@"
 Previous iteration context:
@@ -1393,7 +1398,7 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
   ""action"": ""command"" or ""create_file"" or ""research"" or ""complete"" or ""need_input"",
   ""details"": ""specific details"",
   ""command"": ""bash command if action is command"",
-  ""file_path"": ""path if action is create_file"",
+  ""file_path"": ""path relative to /workspace if action is create_file"",
   ""file_content"": ""content if action is create_file"",
   ""question"": ""question if action is need_input""
 }}";
@@ -1479,6 +1484,10 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
                     // Add to context history for next iteration
                     contextHistory.AppendLine($"[Iteration {iteration}] Executed: {command}");
                     contextHistory.AppendLine($"Output: {commandOutput.Substring(0, Math.Min(MaxContextHistoryEntryLength, commandOutput.Length))}");
+                    if (commandOutput.Contains("Error (exit") || commandOutput.StartsWith("Exception"))
+                    {
+                        contextHistory.AppendLine($"[Iteration {iteration}] COMMAND FAILED — do NOT repeat this command. Use a different approach (e.g. use the 'create_file' action instead of shell commands for writing file content).");
+                    }
                 }
                 else if (action == "create_file")
                 {
@@ -1493,18 +1502,24 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
                         contextHistory.AppendLine($"[Iteration {iteration}] Thought: {details}");
                     }
                     
+                    // Normalize the file path: strip any leading workingDir or / prefix so it is always relative
+                    if (filePath.StartsWith($"{workingDir}/"))
+                        filePath = filePath.Substring($"{workingDir}/".Length);
+                    else if (filePath.StartsWith("/"))
+                        filePath = filePath.TrimStart('/');
+
                     // Create file in container
                     var tempFile = Path.Combine("/tmp", $"luna-temp-{task.Id}-{Path.GetFileName(filePath)}");
                     await System.IO.File.WriteAllTextAsync(tempFile, fileContent);
-                    await CopyFileToContainer(containerId!, tempFile, $"/workspace/{filePath}");
+                    await CopyFileToContainer(containerId!, tempFile, $"{workingDir}/{filePath}");
                     System.IO.File.Delete(tempFile);
                     
-                    await SendSlackMessage(slack, $"📄 **Created file:** `{filePath}`\n_{fileContent.Length} characters_");
-                    await LogToDb(task.Id, $"Created file: {filePath}");
-                    await LogThought(task.Id, iteration, ThoughtType.Action, $"Created file: {filePath}", "create_file", filePath);
+                    await SendSlackMessage(slack, $"📄 **Created/Updated file:** `{filePath}`\n_{fileContent.Length} characters_");
+                    await LogToDb(task.Id, $"Created/Updated file: {filePath}");
+                    await LogThought(task.Id, iteration, ThoughtType.Action, $"Created/Updated file: {filePath}", "create_file", filePath);
                     
                     // Add to context history
-                    contextHistory.AppendLine($"[Iteration {iteration}] Created file: {filePath}");
+                    contextHistory.AppendLine($"[Iteration {iteration}] Created/Updated file: {workingDir}/{filePath} ({fileContent.Length} characters). Use this exact path to reference or update the file in future iterations.");
                 }
                 else if (action == "research")
                 {
