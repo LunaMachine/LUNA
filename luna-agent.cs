@@ -96,6 +96,30 @@ AgentDbContext.DbPath = dbPath;
 using (var db = new AgentDbContext())
 {
     db.Database.EnsureCreated();
+    
+    // Add UserPrompt column if it doesn't exist (for existing databases)
+    try
+    {
+        using var connection = db.Database.GetDbConnection();
+        await connection.OpenAsync();
+        using var command = connection.CreateCommand();
+        
+        // Check if UserPrompt column exists
+        command.CommandText = "SELECT COUNT(*) FROM pragma_table_info('Tasks') WHERE name='UserPrompt'";
+        var columnExists = (long)(await command.ExecuteScalarAsync() ?? 0L) > 0;
+        
+        if (!columnExists)
+        {
+            Console.WriteLine("📊 Migrating database: Adding UserPrompt column...");
+            command.CommandText = "ALTER TABLE Tasks ADD COLUMN UserPrompt TEXT";
+            await command.ExecuteNonQueryAsync();
+            Console.WriteLine("✅ Database migration completed");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"⚠️  Database migration warning: {ex.Message}");
+    }
 }
 
 // Clean up any stale containers from previous runs
