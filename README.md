@@ -294,7 +294,18 @@ The LUNA Agent uses a Personal Access Token (PAT) to create pull requests, creat
 - Copy the token (it starts with `ghp_`) and keep it secure.
 - You will add this token to `~/.luna/luna.env` as `GH_TOKEN=ghp_...`
 
-**Note:** You do NOT need to run `gh auth login` - the agent uses the token from the `.env` file directly.
+Now that your token is setup, sign into Github and the GH CLI
+
+GitHub:
+```bash
+ssh -T git@github.com
+```
+
+GH CLI - run this command and follow the instructions (open browser, enter code, etc.:
+```bash
+# Extract the token and pipe it into the login command
+grep "GH_TOKEN" ~/luna/.env | cut -d'=' -f2 | gh auth login --with-token
+```
 
 ### Fork the LUNA repository
 
