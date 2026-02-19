@@ -492,8 +492,16 @@ async Task<(int cpu, int ram, double temp)> GetSystemStats()
         var cpu = int.TryParse(cpuOut.Trim(), out var c) ? c : 0;
         var ramOut = await RunCommand("free | grep Mem | awk '{print int($3/$2 * 100)}'");
         var ram = int.TryParse(ramOut.Trim(), out var r) ? r : 0;
-        var tempOut = await RunCommand("vcgencmd measure_temp 2>/dev/null | grep -o '[0-9.]*' || echo '0'");
-        var temp = double.TryParse(tempOut.Trim(), out var t) ? t : 0.0;
+        double temp;
+        try
+        {
+            string raw = File.ReadAllText("/sys/class/thermal/thermal_zone0/temp").Trim();
+            temp = double.TryParse(raw, out var t) ? t / 1000.0 : -1.0;
+        }
+        catch
+        {
+            temp = -1.0;
+        }
         return (cpu, ram, temp);
     }
     catch
