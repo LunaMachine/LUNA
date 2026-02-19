@@ -42,9 +42,6 @@ const string OllamaDefaultModel = "gemma3:4b";
 
 // Task Processing Configuration
 const int MaxTaskIterations = 100;
-const int MaxSlackMessagePreviewLength = 500;
-const int MaxDescriptionPreviewLength = 50;
-const int MaxLogPreviewLength = 2000;
 const int MaxContextHistoryEntryLength = 5000;
 const int MaxErrorMessagePreviewLength = 2000;
 const int MaxIterationTimeSeconds = 180; // 3 minutes per iteration
@@ -96,42 +93,6 @@ AgentDbContext.DbPath = dbPath;
 using (var db = new AgentDbContext())
 {
     db.Database.EnsureCreated();
-    
-    // Add UserPrompt column if it doesn't exist (for existing databases)
-    try
-    {
-        using var connection = db.Database.GetDbConnection();
-        await connection.OpenAsync();
-        using var command = connection.CreateCommand();
-        
-        // Check if UserPrompt column exists using PRAGMA table_info
-        command.CommandText = "PRAGMA table_info(Tasks)";
-        using var reader = await command.ExecuteReaderAsync();
-        
-        var columnExists = false;
-        while (await reader.ReadAsync())
-        {
-            var columnName = reader.GetString(1); // Column name is at index 1
-            if (columnName.Equals("UserPrompt", StringComparison.OrdinalIgnoreCase))
-            {
-                columnExists = true;
-                break;
-            }
-        }
-        reader.Close();
-        
-        if (!columnExists)
-        {
-            Console.WriteLine("📊 Migrating database: Adding UserPrompt column...");
-            command.CommandText = "ALTER TABLE Tasks ADD COLUMN UserPrompt TEXT";
-            await command.ExecuteNonQueryAsync();
-            Console.WriteLine("✅ Database migration completed");
-        }
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"⚠️  Database migration warning: {ex.Message}");
-    }
 }
 
 // Clean up any stale containers from previous runs
@@ -222,12 +183,10 @@ async Task SendSlackMessage(ISlackApiClient slack, string message)
     }
 }
 
-string FormatOutputWithTruncation(string output, int maxLength, string label = "Output", bool useCodeBlock = true)
+string FormatOutput(string output, string label = "Output", bool useCodeBlock = true)
 {
-    var preview = output.Substring(0, Math.Min(maxLength, output.Length));
-    var wasTruncated = output.Length > maxLength;
-    var formattedPreview = useCodeBlock ? $"```{preview}```" : preview;
-    return $"📤 **{label}:**\n{formattedPreview}{(wasTruncated ? $"\n_({label} truncated, full content saved in logs)_" : "")}";
+    var formattedOutput = useCodeBlock ? $"```{output}```" : output;
+    return $"📤 **{label}:**\n{formattedOutput}";
 }
 
 string CleanMarkdownFromResponse(string response)
@@ -446,7 +405,7 @@ async Task<string?> CreatePullRequest(int taskId, string branchName, string repo
     {
         // Commit changes
         await RunCommand("git add .", repoPath);
-        var commitMessage = $"LUNA Agent - Task #{taskId}: {taskDescription.Substring(0, Math.Min(MaxDescriptionPreviewLength, taskDescription.Length))}";
+        var commitMessage = $"LUNA Agent - Task #{taskId}: {taskDescription}";
         await RunCommand($"git commit -m \"{commitMessage}\"", repoPath);
         await LogToDb(taskId, "Changes committed");
 
@@ -1353,8 +1312,8 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
                     await LogToDb(task.Id, $"Command output: {commandOutput}");
                     await LogThought(task.Id, iteration, ThoughtType.CommandOutput, commandOutput);
                     
-                    // Show output preview with indication if truncated
-                    await SendSlackMessage(slack, FormatOutputWithTruncation(commandOutput, MaxSlackMessagePreviewLength, "Output"));
+                    // Show command output
+                    await SendSlackMessage(slack, FormatOutput(commandOutput, "Output"));
                     
                     // Add to context history for next iteration
                     contextHistory.AppendLine($"[Iteration {iteration}] Executed: {command}");
@@ -1398,7 +1357,7 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
                     await LogThought(task.Id, iteration, ThoughtType.Observation, researchResult);
                     
                     // Format research results without code block (plain text is more readable)
-                    await SendSlackMessage(slack, FormatOutputWithTruncation(researchResult, MaxSlackMessagePreviewLength, "Research Results", useCodeBlock: false));
+                    await SendSlackMessage(slack, FormatOutput(researchResult, "Research Results", useCodeBlock: false));
                     
                     // Add to context history
                     contextHistory.AppendLine($"[Iteration {iteration}] Research: {details}");
@@ -1565,7 +1524,7 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
                                 
                                 // Commit and push to main
                                 await RunCommand("git add .", repoPath);
-                                var sanitizedDescription = task.Description[..Math.Min(MaxDescriptionPreviewLength, task.Description.Length)]
+                                var sanitizedDescription = task.Description
                                     .Replace("\"", "\\\"")
                                     .Replace("$", "\\$")
                                     .Replace("`", "\\`")
@@ -1725,7 +1684,7 @@ async Task HandleSlackMessage(MessageEvent message, ISlackApiClient slack)
             statusMsg += $"**Queued Tasks:** {queuedTasks.Count}\n";
             foreach (var qt in queuedTasks.Take(5))
             {
-                statusMsg += $"  • #{qt.Id}: {qt.Description.Substring(0, Math.Min(MaxDescriptionPreviewLength, qt.Description.Length))}\n";
+                statusMsg += $"  • #{qt.Id}: {qt.Description}\n";
             }
 
             await SendSlackMessage(slack, statusMsg);
@@ -1758,10 +1717,10 @@ async Task HandleSlackMessage(MessageEvent message, ISlackApiClient slack)
 
                     await SendSlackMessage(slack, msg);
 
-                    // Send log separately if too long
+                    // Send log separately
                     if (!string.IsNullOrEmpty(task.Log))
                     {
-                        var logMsg = $"**Log for Task #{task.Id}:**\n```{task.Log.Substring(0, Math.Min(MaxLogPreviewLength, task.Log.Length))}```";
+                        var logMsg = $"**Log for Task #{task.Id}:**\n```{task.Log}```";
                         await SendSlackMessage(slack, logMsg);
                     }
                 }
@@ -2049,7 +2008,7 @@ async Task HandleSlackMessage(MessageEvent message, ISlackApiClient slack)
             var msg = $"📋 **Task Queue** ({queuedTasks.Count} tasks)\n\n";
             foreach (var qt in queuedTasks)
             {
-                msg += $"#{qt.Id} [{qt.Status}]: {qt.Description.Substring(0, Math.Min(MaxDescriptionPreviewLength, qt.Description.Length))}\n";
+                msg += $"#{qt.Id} [{qt.Status}]: {qt.Description}\n";
             }
 
             await SendSlackMessage(slack, msg.Length > 0 ? msg : "Queue is empty");
