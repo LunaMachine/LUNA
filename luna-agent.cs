@@ -61,7 +61,7 @@ const int MaxSanitizedTitleLength = 60;
 const int MaxGitCommitMessageLength = 72;
 const int MaxPriorProjectsToDisplay = 20;
 
-// Load Slack tokens from file
+// Load configuration from file
 if (System.IO.File.Exists(slackConfigFile))
 {
     foreach (var line in System.IO.File.ReadAllLines(slackConfigFile))
