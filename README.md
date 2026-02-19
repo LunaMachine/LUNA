@@ -343,9 +343,12 @@ SLACK_APP_TOKEN=xapp-...
 SLACK_CHANNEL_ID=C01234567
 GH_TOKEN=ghp_...
 UserGithubName=your-github-username
+# OLLAMA_TIMEOUT_MINUTES=30  # Optional: Ollama HTTP timeout (default: 30 minutes)
 ```
 
-**Important:** The `UserGithubName` should be set to your personal GitHub username. The agent will add this user as a collaborator when creating new repositories for coding tasks.
+**Important:** 
+- The `UserGithubName` should be set to your personal GitHub username. The agent will add this user as a collaborator when creating new repositories for coding tasks.
+- The `OLLAMA_TIMEOUT_MINUTES` is optional and defaults to 30 minutes. Increase this value if you experience timeout errors during long-running AI tasks that generate lengthy responses.
 
 The systemd service will load this file from your home directory.
 
@@ -423,6 +426,7 @@ Environment="SLACK_APP_TOKEN=$(grep ^SLACK_APP_TOKEN /home/luna/.luna/luna.env |
 Environment="SLACK_CHANNEL_ID=$(grep ^SLACK_CHANNEL_ID /home/luna/.luna/luna.env | cut -d= -f2)"
 Environment="GH_TOKEN=$(grep ^GH_TOKEN /home/luna/.luna/luna.env | cut -d= -f2)"
 Environment="UserGithubName=$(grep ^UserGithubName /home/luna/.luna/luna.env | cut -d= -f2)"
+Environment="OLLAMA_TIMEOUT_MINUTES=$(grep ^OLLAMA_TIMEOUT_MINUTES /home/luna/.luna/luna.env | cut -d= -f2 | grep -v '^#' || echo '')"
 
 # Start the agent
 ExecStart=/home/luna/.dotnet/dotnet luna-agent.cs
