@@ -109,12 +109,21 @@ WorkTask? currentTask = null;
 var queueLock = new object();
 
 // Configure Ollama HTTP client with extended timeout for long-running AI tasks
-// Can be overridden via OLLAMA_TIMEOUT_MINUTES environment variable
+// Can be overridden via OLLAMA_TIMEOUT_MINUTES environment variable (max: 120 minutes)
+const int MaxOllamaTimeoutMinutes = 120; // Maximum allowed timeout to prevent indefinite hangs
 var ollamaTimeoutMinutes = OllamaDefaultTimeoutMinutes;
 var ollamaTimeoutEnv = Environment.GetEnvironmentVariable("OLLAMA_TIMEOUT_MINUTES");
 if (!string.IsNullOrEmpty(ollamaTimeoutEnv) && int.TryParse(ollamaTimeoutEnv, out var customTimeout) && customTimeout > 0)
 {
-    ollamaTimeoutMinutes = customTimeout;
+    if (customTimeout > MaxOllamaTimeoutMinutes)
+    {
+        Console.WriteLine($"⚠️  OLLAMA_TIMEOUT_MINUTES value {customTimeout} exceeds maximum {MaxOllamaTimeoutMinutes}, using maximum");
+        ollamaTimeoutMinutes = MaxOllamaTimeoutMinutes;
+    }
+    else
+    {
+        ollamaTimeoutMinutes = customTimeout;
+    }
     Console.WriteLine($"Using custom Ollama timeout: {ollamaTimeoutMinutes} minutes");
 }
 else
