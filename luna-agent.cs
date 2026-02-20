@@ -1755,14 +1755,32 @@ Respond with ONLY this JSON format (no markdown, no code blocks):
             if (researchRepoReady)
             {
                 var researchRepoPath = GetLunaResearchRepoPath();
-                // Build a short slug (2-4 words) from the task description for the folder name
-                var words = task.Description
-                    .Split(new[] { ' ', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
-                    .Select(w => new string(w.Select(c => char.IsLetterOrDigit(c) ? char.ToLower(c) : '-').ToArray()).Trim('-'))
-                    .Where(w => w.Length > 0)
-                    .Take(4);
-                var slug = string.Join("-", words);
-                taskFolder = Path.Combine(researchRepoPath, $"task-{task.Id}-{slug}");
+                // Ask the AI to generate a concise 2-4 word folder name for this task
+                var slugPrompt = $@"Generate a concise folder name for this task. Rules:
+- 2 to 4 words only
+- lowercase letters and hyphens only (no spaces, no special characters)
+- descriptive of the task content
+- no quotes, no punctuation, no explanation
+
+Task: {task.Description}
+
+Respond with ONLY the folder name:";
+                var aiSlug = (await CallOllama(slugPrompt)).Trim().ToLower();
+                // Sanitize AI output: keep only alphanumeric and hyphens, collapse runs of hyphens
+                aiSlug = System.Text.RegularExpressions.Regex.Replace(
+                    new string(aiSlug.Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray()),
+                    "-{2,}", "-").Trim('-');
+                // Fall back to first 4 words of the description if AI returned nothing usable
+                if (string.IsNullOrWhiteSpace(aiSlug))
+                {
+                    aiSlug = string.Join("-",
+                        task.Description
+                            .Split(new[] { ' ', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
+                            .Select(w => new string(w.Select(c => char.IsLetterOrDigit(c) ? char.ToLower(c) : '-').ToArray()).Trim('-'))
+                            .Where(w => w.Length > 0)
+                            .Take(4));
+                }
+                taskFolder = Path.Combine(researchRepoPath, $"task-{task.Id}-{aiSlug}");
             }
             else
             {
