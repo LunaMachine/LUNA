@@ -1770,16 +1770,9 @@ Respond with ONLY the folder name:";
                 aiSlug = System.Text.RegularExpressions.Regex.Replace(
                     new string(aiSlug.Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray()),
                     "-{2,}", "-").Trim('-');
-                // Fall back to first 4 words of the description if AI returned nothing usable
+                // Fall back to Task{Id}-{UTC timestamp} if AI returned nothing usable
                 if (string.IsNullOrWhiteSpace(aiSlug))
-                {
-                    aiSlug = string.Join("-",
-                        task.Description
-                            .Split(new[] { ' ', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
-                            .Select(w => new string(w.Select(c => char.IsLetterOrDigit(c) ? char.ToLower(c) : '-').ToArray()).Trim('-'))
-                            .Where(w => w.Length > 0)
-                            .Take(4));
-                }
+                    aiSlug = $"Task{task.Id}-{DateTime.UtcNow:yyyyMMddHHmmss}";
                 taskFolder = Path.Combine(researchRepoPath, $"task-{task.Id}-{aiSlug}");
             }
             else
